@@ -266,5 +266,93 @@ def test_subroutine_call():
     ), "Expected three occurrences, for forward-declaration, definition, and call from main."
 
 
+def _make_c_module(symbol):
+    n = tvm.te.size_var("n")
+    A = tvm.tir.decl_buffer((n,), dtype="float32", name="A")
+    i = tvm.te.var("i")
+    body = tvm.tir.For(
+        i,
+        0,
+        n,
+        tvm.tir.ForKind.SERIAL,
+        tvm.tir.BufferStore(A, tvm.tir.BufferLoad(A, [i]), [i]),
+    )
+    func = tvm.tir.PrimFunc([A], body).with_attr("global_symbol", symbol)
+    return tvm.build(tvm.IRModule({symbol: func}), target="c")
+
+
+def test_graph_c_module_context_is_weak_and_reloadable():
+    module = _make_c_module("graph_context")
+    source = module.get_source()
+
+    assert "TVM_WEAK" in source
+    assert "__tvm_module_ctx" in source
+
+    temp = utils.tempdir()
+    path_dso = temp.relpath("graph_context.so")
+    module.export_library(path_dso)
+    loaded = tvm.runtime.load_module(path_dso)
+    assert loaded.get_function("graph_context") is not None
+
+
+def test_aot_c_module_context_remains_strong():
+    n = tvm.te.size_var("n")
+    A = tvm.tir.decl_buffer((n,), dtype="float32", name="A")
+    func = tvm.tir.PrimFunc([A], tvm.tir.Evaluate(0)).with_attr(
+        "global_symbol", "aot_context"
+    )
+    func = func.with_attr("runner_function", True)
+    source = tvm.build(tvm.IRModule({"aot_context": func}), target="c").get_source()
+
+    assert "void* __tvm_module_ctx = NULL;" in source
+    assert "void* TVM_WEAK __tvm_module_ctx = NULL;" not in source
+
+
+def _make_source_c_module(symbol):
+    source = """
+#include "tvm/runtime/c_runtime_api.h"
+void* TVM_WEAK __tvm_module_ctx = NULL;
+#ifdef __cplusplus
+extern "C" {{
+#endif
+TVM_DLL int32_t {symbol}(void* args, int* arg_type_ids, int num_args,
+                         void* out_ret_value, int* out_ret_tcode,
+                         void* resource_handle) {{
+  return 0;
+}}
+#ifdef __cplusplus
+}}
+#endif
+""".format(symbol=symbol)
+    return tvm.runtime._ffi_api.CSourceModuleCreate(source, "c", [symbol], None)
+
+
+def test_multiple_graph_c_modules_link_without_context_collision():
+    module = _make_source_c_module("graph_context_a")
+    imported = _make_source_c_module("graph_context_b")
+    module.import_module(imported)
+
+    temp = utils.tempdir()
+    path_dso = temp.relpath("graph_context_multi.so")
+    module.export_library(path_dso)
+    loaded = tvm.runtime.load_module(path_dso)
+    assert loaded.get_function("graph_context_a") is not None
+    assert loaded.get_function("graph_context_b", query_imports=True) is not None
+
+
+def test_tglobal_symbol_call_has_c_host_forward_declaration():
+    tvm.ir.register_op_attr("tir.test_tglobal_symbol", "TGlobalSymbol", "test_tglobal_symbol")
+    tvm.ir.register_op_attr(
+        "tir.test_tglobal_symbol", "TCallEffectKind", tvm.tir.CallEffectKind.Opaque
+    )
+    value = tvm.tir.call_intrin("int32", "tir.test_tglobal_symbol", tvm.tir.const(1, "int32"))
+    func = tvm.tir.PrimFunc([], tvm.tir.Evaluate(value)).with_attr("global_symbol", "caller")
+    source = tvm.build(tvm.IRModule({"caller": func}), target="c").get_source()
+
+    declaration = "TVM_DLL int32_t test_tglobal_symbol(int32_t);"
+    assert declaration in source
+    assert source.index(declaration) < source.index("test_tglobal_symbol(1)")
+
+
 if __name__ == "__main__":
     tvm.testing.main()

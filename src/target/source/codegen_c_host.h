@@ -43,7 +43,7 @@ class CodeGenCHost : public CodeGenC {
   void Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_decl, std::string target_str,
             const std::unordered_set<std::string>& devices);
 
-  void InitGlobalContext();
+  void InitGlobalContext(bool weak = false);
   void AddFunction(const GlobalVar& gvar, const PrimFunc& f) override;
   void AddFunction(const GlobalVar& gvar, const PrimFunc& f, bool emit_fwd_func_decl);
   /*!

@@ -69,8 +69,12 @@ void CodeGenCHost::Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_d
   CodeGenC::Init(output_ssa);
 }
 
-void CodeGenCHost::InitGlobalContext() {
-  decl_stream << "void* " << tvm::runtime::symbol::tvm_module_ctx << " = NULL;\n";
+void CodeGenCHost::InitGlobalContext(bool weak) {
+  decl_stream << "void* ";
+  if (weak) {
+    decl_stream << "TVM_WEAK ";
+  }
+  decl_stream << tvm::runtime::symbol::tvm_module_ctx << " = NULL;\n";
 }
 
 void CodeGenCHost::DefineModuleName() { decl_stream << "void* " << module_name_ << " = NULL;\n"; }
@@ -113,6 +117,13 @@ void CodeGenCHost::GenerateForwardFunctionDeclarations(String global_symbol,
   if (!emit_fwd_func_decl_) {
     return;
   }
+  // These runtime entry points are declared by c_backend_api.h.  Repeating a
+  // declaration inferred from lowered TIR can give a different pointer type
+  // (for example, float* instead of void*) and is rejected by C++ compilers.
+  if (global_symbol == "TVMBackendAllocWorkspace" ||
+      global_symbol == "TVMBackendFreeWorkspace") {
+    return;
+  }
   for (auto& func_already_defined : GetFunctionNames()) {
     if (global_symbol == func_already_defined) {
       return;
@@ -125,7 +136,7 @@ void CodeGenCHost::GenerateForwardFunctionDeclarations(String global_symbol,
     if (i > 0) {
       fwd_decl_stream << ", ";
     }
-    CodeGenSourceBase::PrintType(arg_types[i], fwd_decl_stream);
+    this->PrintType(arg_types[i], fwd_decl_stream);
   }
   fwd_decl_stream << ");\n";
 }
@@ -376,6 +387,15 @@ void CodeGenCHost::VisitExpr_(const CallNode* op, std::ostream& os) {  // NOLINT
   } else if (op->op.same_as(builtin::tvm_throw_last_error())) {
     this->PrintIndent();
     this->stream << "return -1;\n";
+  } else if (auto call_op = op->op.as<Op>();
+             call_op.defined() && op_attr_global_symbol_.count(call_op.value())) {
+    CodeGenC::VisitExpr_(op, os);
+    Array<Type> arg_types;
+    for (const PrimExpr& arg : op->args) {
+      arg_types.push_back(GetType(arg));
+    }
+    this->GenerateForwardFunctionDeclarations(
+        op_attr_global_symbol_[call_op.value()], arg_types, GetTypeFromRuntimeDataType(op->dtype));
   } else {
     CodeGenC::VisitExpr_(op, os);
   }
@@ -484,8 +504,8 @@ runtime::Module BuildCHost(IRModule mod, Target target) {
 
   bool has_aot_executor_fn = std::any_of(
       funcs.begin(), funcs.end(), [&](const auto& kv) { return is_aot_executor_fn(kv.second); });
-  if (has_aot_executor_fn && runtime->name == relay::kTvmRuntimeCpp) {
-    cg.InitGlobalContext();
+  if (runtime->name == relay::kTvmRuntimeCpp) {
+    cg.InitGlobalContext(/*weak=*/!has_aot_executor_fn);
   }
 
   if (target->GetAttr<Bool>("system-lib").value_or(Bool(false))) {
