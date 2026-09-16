@@ -60,6 +60,7 @@ void CodeGenCHost::Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_d
   static_init_declarations_.clear();
   static_init_declarations_sink_ = &static_init_declarations_;
   static_init_declaration_stream_sink_ = &decl_stream;
+  allocate_const_declaration_stream_sink_ = &decl_stream;
   static_init_name_supply_ = NameSupply();
   decl_stream << "// tvm target: " << target_str << "\n";
   decl_stream << "#define TVM_EXPORTS\n";
@@ -479,7 +480,11 @@ void CodeGenCHost::VisitStmt_(const AssertStmtNode* op) {  // NOLINT(*)
 }
 
 void CodeGenCHost::VisitStmt_(const AllocateConstNode* op) {  // NOLINT(*)
-  std::string symbol_name = AllocVarID(op->buffer_var.get());
+  std::string symbol_hint = op->buffer_var->name_hint;
+  std::replace(symbol_hint.begin(), symbol_hint.end(), ':', '_');
+  std::replace(symbol_hint.begin(), symbol_hint.end(), '-', '_');
+  std::replace(symbol_hint.begin(), symbol_hint.end(), '.', '_');
+  std::string symbol_name = static_init_name_supply_->FreshName(symbol_hint);
 
   int64_t num_elements = 1;
   const auto& data = op->data.value();
@@ -492,12 +497,17 @@ void CodeGenCHost::VisitStmt_(const AllocateConstNode* op) {  // NOLINT(*)
   // rejected by Mach-O.  Keep the same module-local static constant and
   // alignment contract, but use only the portable compiler alignment
   // attribute.
-  decl_stream << "\nstatic const ";
-  PrintType(data.DataType(), decl_stream);
-  decl_stream << " __attribute__((aligned(" << constants_byte_alignment_->value << "))) "
-              << symbol_name << "[" << num_elements << "] = {\n";
-  NDArrayDataToC(data, 4, decl_stream);
-  decl_stream << "};\n";
+  // Constants used by an isolated static-uop callback must be declared in
+  // the enclosing module.  Keep this sink separate from the callback's
+  // general declaration stream: callback Init() emits headers and module
+  // context declarations that must not be copied into the parent module.
+  std::ostringstream& constant_declarations = *allocate_const_declaration_stream_sink_;
+  constant_declarations << "\nstatic const ";
+  PrintType(data.DataType(), constant_declarations);
+  constant_declarations << " __attribute__((aligned(" << constants_byte_alignment_->value << "))) "
+                        << symbol_name << "[" << num_elements << "] = {\n";
+  NDArrayDataToC(data, 4, constant_declarations);
+  constant_declarations << "};\n";
 
   var_idmap_[op->buffer_var.operator->()] = symbol_name;
   this->PrintStmt(op->body);
@@ -547,6 +557,9 @@ void CodeGenCHost::PrintStaticInit(const AttrStmtNode* op) {
   callback_codegen.static_init_stream_sink_ = static_init_stream_sink_;
   callback_codegen.static_init_declarations_sink_ = static_init_declarations_sink_;
   callback_codegen.static_init_declaration_stream_sink_ = static_init_declaration_stream_sink_;
+  callback_codegen.allocate_const_declaration_stream_sink_ =
+      allocate_const_declaration_stream_sink_;
+  callback_codegen.constants_byte_alignment_ = constants_byte_alignment_;
   callback_codegen.InitFuncState(tir::PrimFunc({}, op->body));
   int callback_scope = callback_codegen.BeginScope();
   callback_codegen.PrintStmt(op->body);

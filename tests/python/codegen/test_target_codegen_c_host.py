@@ -341,21 +341,35 @@ def _make_allocate_const_module(symbol, dtype, values):
 
 
 def test_c_host_allocate_const_is_static_and_portable():
-    source = tvm.build(
-        _make_allocate_const_module("portable_constant", "int32", [-3, 0, 7, 42]),
-        target="c",
-    ).get_source()
+    values = [-3, 0, 7, 42]
+    module = tvm.build(
+        _make_allocate_const_module("portable_constant", "int32", values), target="c"
+    )
+    source = module.get_source()
 
     assert "static const int32_t" in source
     assert "aligned(16)" in source
     assert ".rodata.tvm" not in source
     assert "TVMBackendAllocWorkspace" not in source
 
-    custom_alignment_source = tvm.build(
+    custom_alignment_module = tvm.build(
         _make_allocate_const_module("portable_constant_aligned", "int32", [1, 2]),
         target="c -constants-byte-alignment=32",
-    ).get_source()
+    )
+    custom_alignment_source = custom_alignment_module.get_source()
     assert "aligned(32)" in custom_alignment_source
+
+    for built_module, symbol, expected in [
+        (module, "portable_constant", values),
+        (custom_alignment_module, "portable_constant_aligned", [1, 2]),
+    ]:
+        temp = utils.tempdir()
+        path_dso = temp.relpath(symbol + ".so")
+        built_module.export_library(path_dso)
+        loaded = tvm.runtime.load_module(path_dso)
+        output = tvm.nd.array(np.zeros(len(expected), dtype="int32"), tvm.cpu(0))
+        loaded[symbol](output)
+        np.testing.assert_equal(output.numpy(), np.asarray(expected, dtype="int32"))
 
 
 @pytest.mark.parametrize(
@@ -428,20 +442,24 @@ def test_c_host_allocate_const_names_are_unique_and_deterministic():
             }
         )
 
-    first = tvm.build(
-        make_module(),
-        target="c",
-    ).get_source()
-    second = tvm.build(
-        make_module(),
-        target="c",
-    ).get_source()
+    first_module = tvm.build(make_module(), target="c")
+    second_module = tvm.build(make_module(), target="c")
+    first = first_module.get_source()
+    second = second_module.get_source()
     assert first == second
     assert first.count("static const int32_t") == 2
     assert "constant_a[4]" in first
     assert "constant_b[4]" in first
     assert "constant_a)[i]" in first
     assert "constant_b)[i_1]" in first
+
+    temp = utils.tempdir()
+    path_dso = temp.relpath("portable_constant_two.so")
+    first_module.export_library(path_dso)
+    loaded = tvm.runtime.load_module(path_dso)
+    output = tvm.nd.array(np.zeros(8, dtype="int32"), tvm.cpu(0))
+    loaded["portable_constant_two"](output)
+    np.testing.assert_equal(output.numpy(), np.asarray([1, -2, 3, -4, 5, -6, 7, -8], dtype="int32"))
 
 
 def _make_source_c_module(symbol):
@@ -513,8 +531,144 @@ def _make_c_uop_scope_module(initializers):
     return tvm.IRModule({"uop_scope": func})
 
 
-def _build_c_host_module(mod):
-    return tvm.get_global_func("target.build.c")(mod, tvm.target.Target("c"))
+def _make_c_uop_scope_allocate_const_module():
+    cp = te.thread_axis((0, 1), "cop")
+    const_vars = [
+        tvm.tir.Var(name, tvm.ir.PointerType(tvm.ir.PrimType("int32"), "global"))
+        for name in ("callback_constant_a", "callback_constant_b")
+    ]
+    const_buffers = [
+        tvm.tir.decl_buffer((4,), dtype="int32", data=var, name=var.name)
+        for var in const_vars
+    ]
+    calls = []
+    for const_buffer in const_buffers:
+        for index in range(4):
+            calls.append(
+                tvm.tir.Evaluate(
+                    tvm.tir.call_extern(
+                        "int32",
+                        "VTAUopLoopBegin",
+                        tvm.tir.BufferLoad(const_buffer, [index]),
+                        tvm.tir.const(0, "uint32"),
+                        tvm.tir.const(0, "uint32"),
+                        tvm.tir.const(0, "uint32"),
+                    )
+                )
+            )
+    inner_body = tvm.tir.AllocateConst(
+        const_vars[1],
+        "int32",
+        [4],
+        tvm.nd.array(np.asarray([55, -66, 77, -88], dtype="int32")),
+        tvm.tir.SeqStmt(calls[4:]),
+        annotations={},
+    )
+    inner_scope = tvm.tir.AttrStmt(
+        cp, "coproc_uop_scope", tvm.tir.StringImm("VTAPushGEMMOp"), inner_body
+    )
+    body = tvm.tir.AllocateConst(
+        const_vars[0],
+        "int32",
+        [4],
+        tvm.nd.array(np.asarray([11, -22, 33, -44], dtype="int32")),
+        tvm.tir.SeqStmt([inner_scope, *calls[:4]]),
+        annotations={},
+    )
+    scoped_body = tvm.tir.AttrStmt(
+        cp, "coproc_uop_scope", tvm.tir.StringImm("VTAPushGEMMOp"), body
+    )
+    func = tvm.tir.PrimFunc([], scoped_body, tvm.ir.PrimType("int32")).with_attr(
+        "global_symbol", "uop_scope_allocate_const"
+    )
+    return tvm.IRModule({"uop_scope_allocate_const": func})
+
+
+def _make_c_uop_scope_allocate_const_support_module():
+    source = r'''
+#include "tvm/runtime/c_runtime_api.h"
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+static int32_t observed[8];
+static int32_t observed_count = 0;
+int32_t uop_scope_allocate_const(void);
+int32_t VTAUopLoopBegin(int32_t value, uint32_t b, uint32_t c, uint32_t d) {
+  (void)b; (void)c; (void)d;
+  if (observed_count < 8) observed[observed_count] = value;
+  observed_count++;
+  return 0;
+}
+int32_t VTAPushGEMMOp(void** handle, int32_t (*callback)(void*), void* data, int32_t x) {
+  (void)data; (void)x;
+  *handle = (void*)1;
+  return callback(NULL);
+}
+TVM_DLL int32_t vta_test_invoke(TVMValue* args, int* arg_type_ids, int num_args,
+                                 TVMValue* out_ret_value, int* out_ret_tcode,
+                                 void* resource_handle) {
+  (void)args; (void)arg_type_ids; (void)num_args; (void)out_ret_value;
+  (void)out_ret_tcode; (void)resource_handle;
+  observed_count = 0;
+  return uop_scope_allocate_const();
+}
+TVM_DLL int32_t vta_test_get(int32_t index) {
+  return index >= 0 && index < observed_count ? observed[index] : -1;
+}
+#ifdef __cplusplus
+}
+#endif
+'''
+    return tvm.runtime._ffi_api.CSourceModuleCreate(
+        source, "c", ["vta_test_invoke", "vta_test_get"], None
+    )
+
+
+def test_c_host_static_uop_scope_allocate_const_compiles_reloads_and_byte_checks():
+    generated = _build_c_host_module(
+        _make_c_uop_scope_allocate_const_module(), "c -constants-byte-alignment=32"
+    )
+    source = generated.get_source()
+    assert "static const int32_t" in source
+    assert source.count("aligned(32)") == 2
+    callback_start = source.index("static int32_t __tvm_static_init_lambda")
+    entry_start = source.index("TVM_DLL int32_t uop_scope_allocate_const() {")
+    callback = source[callback_start:entry_start]
+    assert "callback_constant_a" in callback
+    assert "callback_constant_b" in callback
+
+    support = _make_c_uop_scope_allocate_const_support_module()
+    module = tvm.runtime._ffi_api.CSourceModuleCreate(
+        generated.get_source() + support.get_source(),
+        "c",
+        ["vta_test_invoke", "vta_test_get"],
+        None,
+    )
+    temp = utils.tempdir()
+    path_dso = temp.relpath("static_uop_allocate_const.so")
+    module.export_library(path_dso)
+    loaded = tvm.runtime.load_module(path_dso)
+    assert loaded.get_function("vta_test_invoke") is not None
+    assert loaded.get_function("vta_test_get") is not None
+
+    library = ctypes.CDLL(path_dso)
+    invoke = library.vta_test_invoke
+    invoke.restype = ctypes.c_int32
+    invoke.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.c_int,
+                       ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.c_void_p]
+    get_value = library.vta_test_get
+    get_value.restype = ctypes.c_int32
+    get_value.argtypes = [ctypes.c_int32]
+    assert invoke(None, None, 0, None, None, None) == 0
+    np.testing.assert_equal(
+        [get_value(index) for index in range(8)],
+        [55, -66, 77, -88, 11, -22, 33, -44],
+    )
+
+
+def _build_c_host_module(mod, target="c"):
+    return tvm.get_global_func("target.build.c")(mod, tvm.target.Target(target))
 
 
 def test_c_host_static_uop_scope_generates_callback_and_initializer_call():

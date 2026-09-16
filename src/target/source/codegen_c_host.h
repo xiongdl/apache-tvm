@@ -107,6 +107,8 @@ class CodeGenCHost : public CodeGenC {
   std::unordered_set<std::string>* static_init_declarations_sink_{nullptr};
   /*! \brief declaration stream used by nested isolated callback contexts */
   std::ostringstream* static_init_declaration_stream_sink_{nullptr};
+  /*! \brief declaration stream used by nested isolated callback constants */
+  std::ostringstream* allocate_const_declaration_stream_sink_{nullptr};
   /*! \brief module-local names for static handles and callbacks */
   NameSupply static_init_name_supply_;
 
