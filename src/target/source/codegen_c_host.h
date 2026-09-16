@@ -68,6 +68,9 @@ class CodeGenCHost : public CodeGenC {
   void VisitExpr_(const MaxNode* op, std::ostream& os) final;  // NOLINT(*)
 
   void VisitStmt_(const AssertStmtNode* op) final;  // NOLINT(*)
+  void VisitStmt_(const AttrStmtNode* op) final;  // NOLINT(*)
+
+  std::string Finish() override;
 
   void GenerateForwardFunctionDeclarations(String global_symbol, const Array<Type>& arg_types,
                                            const Type& ret_type) override;
@@ -93,12 +96,20 @@ class CodeGenCHost : public CodeGenC {
   /*! \brief whether to emit forwared function declarations in the resulting C code */
   bool emit_fwd_func_decl_;
 
+  /*! \brief generated definitions for static coprocessor-uop callbacks */
+  std::ostringstream static_init_stream_;
+  /*! \brief initializer declarations already emitted in this module */
+  std::unordered_set<std::string> static_init_declarations_;
+  /*! \brief module-local names for static handles and callbacks */
+  NameSupply static_init_name_supply_;
+
   FunctionInfo GetFunctionInfo(const CallNode* op, bool has_resource_handle);
   std::string GetPackedName(const CallNode* op);
   void PrintGetFuncFromBackend(const std::string& func_name, const std::string& packed_func_name);
   void PrintFuncCall(const std::string& packed_func_name, int num_args);
   void PrintFuncCallC(const std::string& packed_func_name, int num_args,
                       const std::string& resource_handle_name);
+  void PrintStaticInit(const AttrStmtNode* op);
 
   /*!
    * \brief Print ternary conditional operator implementing binary `op`

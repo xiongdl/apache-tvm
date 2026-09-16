@@ -27,6 +27,7 @@
 #include <tvm/runtime/crt/error_codes.h>
 #include <tvm/runtime/module.h>
 #include <tvm/target/codegen.h>
+#include <tvm/tir/analysis.h>
 
 #include <algorithm>
 #include <string>
@@ -49,6 +50,10 @@ void CodeGenCHost::Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_d
   emit_asserts_ = emit_asserts;
   emit_fwd_func_decl_ = emit_fwd_func_decl;
   declared_globals_.clear();
+  static_init_stream_.str("");
+  static_init_stream_.clear();
+  static_init_declarations_.clear();
+  static_init_name_supply_ = NameSupply();
   decl_stream << "// tvm target: " << target_str << "\n";
   decl_stream << "#define TVM_EXPORTS\n";
   decl_stream << "#include \"tvm/runtime/c_runtime_api.h\"\n";
@@ -67,6 +72,15 @@ void CodeGenCHost::Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_d
     decl_stream << "#include <arm_nn_math_types.h>\n";
   }
   CodeGenC::Init(output_ssa);
+}
+
+std::string CodeGenCHost::Finish() {
+  std::ostringstream code;
+  code << decl_stream.str();
+  code << fwd_decl_stream.str();
+  code << static_init_stream_.str();
+  code << stream.str();
+  return code.str();
 }
 
 void CodeGenCHost::InitGlobalContext(bool weak) {
@@ -416,6 +430,56 @@ void CodeGenCHost::VisitStmt_(const AssertStmtNode* op) {  // NOLINT(*)
     stream << "}\n";
   }
   this->PrintStmt(op->body);
+}
+
+void CodeGenCHost::VisitStmt_(const AttrStmtNode* op) {  // NOLINT(*)
+  if (op->attr_key == tir::attr::coproc_uop_scope) {
+    PrintStaticInit(op);
+    return;
+  }
+  CodeGenC::VisitStmt_(op);
+}
+
+void CodeGenCHost::PrintStaticInit(const AttrStmtNode* op) {
+  const auto* initializer = op->value.as<StringImmNode>();
+  ICHECK(initializer != nullptr)
+      << "CodeGenCHost: coproc_uop_scope requires a StringImm initializer";
+
+  Array<Var> captured = tir::UndefinedVars(op->body, {});
+  ICHECK(captured.empty())
+      << "CodeGenCHost: coproc_uop_scope only supports capture-free bodies; "
+      << "captured variables are not supported (coproc_uop_scope initializer '"
+      << initializer->value << "')";
+
+  std::string handle_name = static_init_name_supply_->FreshName("__tvm_static_handle");
+  std::string callback_name = static_init_name_supply_->FreshName("__tvm_static_init_lambda");
+
+  if (static_init_declarations_.insert(initializer->value).second) {
+    decl_stream << "int32_t " << initializer->value
+                << "(void**, int32_t (*)(void*), void*, int32_t);\n";
+  }
+  decl_stream << "static void* " << handle_name << " = NULL;\n";
+
+  std::ostringstream callback_body;
+  stream.swap(callback_body);
+  this->PrintStmt(op->body);
+  stream.swap(callback_body);
+
+  static_init_stream_ << "static int32_t " << callback_name << "(void* closure_data) {\n"
+                      << callback_body.str();
+  static_init_stream_ << "  (void)closure_data;\n"
+                      << "  return 0;\n"
+                      << "}\n";
+
+  PrintIndent();
+  stream << "if (" << initializer->value << "(&" << handle_name << ", " << callback_name
+         << ", NULL, 0) != 0) {\n";
+  int init_scope = this->BeginScope();
+  PrintIndent();
+  stream << "return -1;\n";
+  this->EndScope(init_scope);
+  PrintIndent();
+  stream << "}\n";
 }
 
 void CodeGenCHost::VisitExpr_(const MinNode* op, std::ostream& os) {  // NOLINT(*)

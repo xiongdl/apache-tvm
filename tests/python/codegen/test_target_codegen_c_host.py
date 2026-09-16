@@ -17,6 +17,7 @@
 
 import tvm
 import tvm.testing
+import pytest
 
 from tvm import te
 from tvm.contrib import utils
@@ -352,6 +353,72 @@ def test_tglobal_symbol_call_has_c_host_forward_declaration():
     declaration = "TVM_DLL int32_t test_tglobal_symbol(int32_t);"
     assert declaration in source
     assert source.index(declaration) < source.index("test_tglobal_symbol(1)")
+
+
+def _make_c_uop_scope_module(initializers):
+    ib = tvm.tir.ir_builder.create()
+    cp = te.thread_axis((0, 1), "cop")
+    for index, initializer in enumerate(initializers):
+        ib.scope_attr(cp, "coproc_uop_scope", tvm.tir.StringImm(initializer))
+        ib.emit(
+            tvm.tir.call_extern(
+                "int32",
+                "VTAUopLoopBegin",
+                tvm.tir.const(1, "uint32"),
+                tvm.tir.const(0, "uint32"),
+                tvm.tir.const(0, "uint32"),
+                tvm.tir.const(0, "uint32"),
+            )
+        )
+        ib.emit(tvm.tir.call_extern("int32", "VTAUopLoopEnd"))
+    stmt = ib.get()
+    func = tvm.tir.PrimFunc([], stmt, tvm.ir.PrimType("int32")).with_attr(
+        "global_symbol", "uop_scope"
+    )
+    return tvm.IRModule({"uop_scope": func})
+
+
+def _build_c_host_module(mod):
+    return tvm.get_global_func("target.build.c")(mod, tvm.target.Target("c"))
+
+
+def test_c_host_static_uop_scope_generates_callback_and_initializer_call():
+    source = _build_c_host_module(_make_c_uop_scope_module(["VTAPushGEMMOp"])).get_source()
+
+    assert "static void* __tvm_static_handle" in source
+    assert "static int32_t __tvm_static_init_lambda" in source
+    assert "int32_t VTAPushGEMMOp(void**, int32_t (*)(void*), void*, int32_t);" in source
+    assert "VTAPushGEMMOp(&__tvm_static_handle" in source
+    assert "VTAUopLoopBegin" in source[source.index("__tvm_static_init_lambda") :]
+    entry_start = source.index("TVM_DLL int32_t uop_scope() {")
+    entry = source[entry_start:]
+    assert entry.count("VTAUopLoopBegin") == 0
+    assert "return -1" in entry
+
+
+def test_c_host_static_uop_scopes_have_unique_callbacks_and_deduplicated_declaration():
+    source = _build_c_host_module(
+        _make_c_uop_scope_module(["VTAPushGEMMOp", "VTAPushGEMMOp", "VTAPushALUOp"])
+    ).get_source()
+
+    assert source.count("int32_t VTAPushGEMMOp(void**, int32_t (*)(void*), void*, int32_t);") == 1
+    assert source.count("int32_t VTAPushALUOp(void**, int32_t (*)(void*), void*, int32_t);") == 1
+    assert source.count("static void* __tvm_static_handle") == 3
+    assert source.count("static int32_t __tvm_static_init_lambda") == 3
+    assert source.count("VTAPushGEMMOp(&__tvm_static_handle") == 2
+    assert source.count("VTAPushALUOp(&__tvm_static_handle") == 1
+
+
+def test_c_host_static_uop_scope_rejects_captured_variables():
+    n = tvm.tir.Var("n", "int32")
+    ib = tvm.tir.ir_builder.create()
+    cp = te.thread_axis((0, 1), "cop")
+    ib.scope_attr(cp, "coproc_uop_scope", tvm.tir.StringImm("VTAPushGEMMOp"))
+    ib.emit(tvm.tir.Evaluate(n))
+    func = tvm.tir.PrimFunc([n], ib.get()).with_attr("global_symbol", "captured_scope")
+
+    with pytest.raises(tvm.error.TVMError, match="coproc_uop_scope"):
+        _build_c_host_module(tvm.IRModule({"captured_scope": func}))
 
 
 if __name__ == "__main__":
