@@ -310,6 +310,140 @@ def test_aot_c_module_context_remains_strong():
     assert "void* TVM_WEAK __tvm_module_ctx = NULL;" not in source
 
 
+def _make_allocate_const_module(symbol, dtype, values):
+    const_var = tvm.tir.Var(
+        "constant", tvm.ir.PointerType(tvm.ir.PrimType(dtype), "global")
+    )
+    const_buffer = tvm.tir.decl_buffer(
+        (len(values),), dtype=dtype, data=const_var, name="constant"
+    )
+    output = tvm.tir.decl_buffer((len(values),), dtype=dtype, name="output")
+    index = tvm.tir.Var("i", "int32")
+    copy = tvm.tir.For(
+        index,
+        0,
+        len(values),
+        tvm.tir.ForKind.SERIAL,
+        tvm.tir.BufferStore(
+            output, tvm.tir.BufferLoad(const_buffer, [index]), [index]
+        ),
+    )
+    body = tvm.tir.AllocateConst(
+        const_var,
+        dtype,
+        [len(values)],
+        tvm.nd.array(np.asarray(values, dtype=dtype)),
+        copy,
+        annotations={},
+    )
+    func = tvm.tir.PrimFunc([output], body).with_attr("global_symbol", symbol)
+    return tvm.IRModule({symbol: func})
+
+
+def test_c_host_allocate_const_is_static_and_portable():
+    source = tvm.build(
+        _make_allocate_const_module("portable_constant", "int32", [-3, 0, 7, 42]),
+        target="c",
+    ).get_source()
+
+    assert "static const int32_t" in source
+    assert "aligned(16)" in source
+    assert ".rodata.tvm" not in source
+    assert "TVMBackendAllocWorkspace" not in source
+
+    custom_alignment_source = tvm.build(
+        _make_allocate_const_module("portable_constant_aligned", "int32", [1, 2]),
+        target="c -constants-byte-alignment=32",
+    ).get_source()
+    assert "aligned(32)" in custom_alignment_source
+
+
+@pytest.mark.parametrize(
+    "dtype, values",
+    [
+        ("int8", [-128, -1, 0, 127]),
+        ("uint8", [0, 1, 127, 255]),
+        ("float32", [-1.5, 0.0, 2.25, 42.5]),
+    ],
+)
+def test_c_host_allocate_const_exports_and_reloads(dtype, values):
+    symbol = "portable_constant_" + dtype
+    module = tvm.build(_make_allocate_const_module(symbol, dtype, values), target="c")
+    temp = utils.tempdir()
+    path_dso = temp.relpath(symbol + ".so")
+    module.export_library(path_dso)
+    loaded = tvm.runtime.load_module(path_dso)
+    output = tvm.nd.array(np.zeros(len(values), dtype=dtype), tvm.cpu(0))
+    loaded[symbol](output)
+    np.testing.assert_equal(output.numpy(), np.asarray(values, dtype=dtype))
+
+
+def test_c_host_allocate_const_names_are_unique_and_deterministic():
+    def make_module():
+        output = tvm.tir.decl_buffer((8,), dtype="int32", name="output")
+        const_vars = [
+            tvm.tir.Var(name, tvm.ir.PointerType(tvm.ir.PrimType("int32"), "global"))
+            for name in ("constant_a", "constant_b")
+        ]
+        const_buffers = [
+            tvm.tir.decl_buffer((4,), dtype="int32", data=var, name=var.name)
+            for var in const_vars
+        ]
+        copies = []
+        for offset, const_buffer in ((0, const_buffers[0]), (4, const_buffers[1])):
+            index = tvm.tir.Var("i", "int32")
+            copies.append(
+                tvm.tir.For(
+                    index,
+                    0,
+                    4,
+                    tvm.tir.ForKind.SERIAL,
+                    tvm.tir.BufferStore(
+                        output,
+                        tvm.tir.BufferLoad(const_buffer, [index]),
+                        [index + offset],
+                    ),
+                )
+            )
+        body = tvm.tir.AllocateConst(
+            const_vars[0],
+            "int32",
+            [4],
+            tvm.nd.array(np.asarray([1, -2, 3, -4], dtype="int32")),
+            tvm.tir.AllocateConst(
+                const_vars[1],
+                "int32",
+                [4],
+                tvm.nd.array(np.asarray([5, -6, 7, -8], dtype="int32")),
+                tvm.tir.SeqStmt(copies),
+                annotations={},
+            ),
+            annotations={},
+        )
+        return tvm.IRModule(
+            {
+                "portable_constant_two": tvm.tir.PrimFunc([output], body).with_attr(
+                    "global_symbol", "portable_constant_two"
+                )
+            }
+        )
+
+    first = tvm.build(
+        make_module(),
+        target="c",
+    ).get_source()
+    second = tvm.build(
+        make_module(),
+        target="c",
+    ).get_source()
+    assert first == second
+    assert first.count("static const int32_t") == 2
+    assert "constant_a[4]" in first
+    assert "constant_b[4]" in first
+    assert "constant_a)[i]" in first
+    assert "constant_b)[i_1]" in first
+
+
 def _make_source_c_module(symbol):
     source = """
 #include "tvm/runtime/c_runtime_api.h"

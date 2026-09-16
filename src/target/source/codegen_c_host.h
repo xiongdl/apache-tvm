@@ -68,6 +68,7 @@ class CodeGenCHost : public CodeGenC {
   void VisitExpr_(const MaxNode* op, std::ostream& os) final;  // NOLINT(*)
 
   void VisitStmt_(const AssertStmtNode* op) final;  // NOLINT(*)
+  void VisitStmt_(const AllocateConstNode* op) final;  // NOLINT(*)
   void VisitStmt_(const AttrStmtNode* op) final;  // NOLINT(*)
 
   std::string Finish() override;

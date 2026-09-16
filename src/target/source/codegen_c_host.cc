@@ -478,6 +478,31 @@ void CodeGenCHost::VisitStmt_(const AssertStmtNode* op) {  // NOLINT(*)
   this->PrintStmt(op->body);
 }
 
+void CodeGenCHost::VisitStmt_(const AllocateConstNode* op) {  // NOLINT(*)
+  std::string symbol_name = AllocVarID(op->buffer_var.get());
+
+  int64_t num_elements = 1;
+  const auto& data = op->data.value();
+  for (int64_t dim : data.Shape()) {
+    num_elements *= dim;
+  }
+
+  // CodeGenC places constants in an ELF-specific section.  The host C
+  // backend is also compiled as C++ on macOS, where that section spelling is
+  // rejected by Mach-O.  Keep the same module-local static constant and
+  // alignment contract, but use only the portable compiler alignment
+  // attribute.
+  decl_stream << "\nstatic const ";
+  PrintType(data.DataType(), decl_stream);
+  decl_stream << " __attribute__((aligned(" << constants_byte_alignment_->value << "))) "
+              << symbol_name << "[" << num_elements << "] = {\n";
+  NDArrayDataToC(data, 4, decl_stream);
+  decl_stream << "};\n";
+
+  var_idmap_[op->buffer_var.operator->()] = symbol_name;
+  this->PrintStmt(op->body);
+}
+
 void CodeGenCHost::VisitStmt_(const AttrStmtNode* op) {  // NOLINT(*)
   if (op->attr_key == tir::attr::coproc_uop_scope) {
     PrintStaticInit(op);
