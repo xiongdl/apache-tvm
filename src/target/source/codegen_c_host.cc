@@ -28,6 +28,7 @@
 #include <tvm/runtime/module.h>
 #include <tvm/target/codegen.h>
 #include <tvm/tir/analysis.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include <algorithm>
 #include <string>
@@ -47,12 +48,18 @@ CodeGenCHost::CodeGenCHost() { module_name_ = name_supply_->FreshName("__tvm_mod
 
 void CodeGenCHost::Init(bool output_ssa, bool emit_asserts, bool emit_fwd_func_decl,
                         std::string target_str, const std::unordered_set<std::string>& devices) {
+  output_ssa_ = output_ssa;
+  target_str_ = target_str;
+  devices_ = devices;
   emit_asserts_ = emit_asserts;
   emit_fwd_func_decl_ = emit_fwd_func_decl;
   declared_globals_.clear();
   static_init_stream_.str("");
   static_init_stream_.clear();
+  static_init_stream_sink_ = &static_init_stream_;
   static_init_declarations_.clear();
+  static_init_declarations_sink_ = &static_init_declarations_;
+  static_init_declaration_stream_sink_ = &decl_stream;
   static_init_name_supply_ = NameSupply();
   decl_stream << "// tvm target: " << target_str << "\n";
   decl_stream << "#define TVM_EXPORTS\n";
@@ -99,13 +106,36 @@ void CodeGenCHost::AddFunction(const GlobalVar& gvar, const PrimFunc& func) {
 
 void CodeGenCHost::AddFunction(const GlobalVar& gvar, const PrimFunc& func,
                                bool emit_fwd_func_decl) {
+  if (HasStaticInitScope(func->body) && !ReturnsInt32(func->ret_type)) {
+    LOG(FATAL) << "CodeGenCHost: coproc_uop_scope requires an int32-returning function "
+               << "so initializer failures can be propagated; function " << gvar
+               << " returns " << func->ret_type;
+  }
   auto global_symbol = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
   if (global_symbol) {
     function_names_.push_back(global_symbol.value());
   }
 
   emit_fwd_func_decl_ = emit_fwd_func_decl;
-  CodeGenC::AddFunction(gvar, func);
+  // Keep the base generator's complete per-function lifecycle, while adding
+  // an explicit success return for static-uop functions.  A static initializer
+  // can fail and return -1, so an int32 entry must also have a defined success
+  // value instead of relying on C's undefined fall-through return.
+  DeclareFunction(gvar, func);
+  auto function_name = GetFunctionName(gvar);
+  InitFuncState(func);
+  PrintFunctionSignature(function_name, func, stream);
+  stream << " {\n";
+  PreFunctionBody(func);
+  int func_scope = BeginScope();
+  PrintStmt(func->body);
+  EndScope(func_scope);
+  if (HasStaticInitScope(func->body) && ReturnsInt32(func->ret_type)) {
+    PrintIndent();
+    stream << "return 0;\n";
+  }
+  PrintIndent();
+  stream << "}\n\n";
   if (func->HasNonzeroAttr(tir::attr::kIsEntryFunc)) {
     ICHECK(global_symbol.defined())
         << "CodeGenCHost: The entry func must have the global_symbol attribute, "
@@ -122,6 +152,22 @@ void CodeGenCHost::AddFunction(const GlobalVar& gvar, const PrimFunc& func,
            << "(args, arg_type_ids, num_args, out_ret_value, out_ret_tcode, resource_handle);\n";
     stream << "}\n";
   }
+}
+
+bool CodeGenCHost::HasStaticInitScope(const Stmt& stmt) const {
+  bool found = false;
+  tir::PostOrderVisit(stmt, [&found](const ObjectRef& node) {
+    if (node.as<AttrStmtNode>() != nullptr &&
+        node.as<AttrStmtNode>()->attr_key == tir::attr::coproc_uop_scope) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+bool CodeGenCHost::ReturnsInt32(const Type& ret_type) const {
+  const auto* prim_type = ret_type.as<PrimTypeNode>();
+  return prim_type != nullptr && prim_type->dtype == DataType::Int(32);
 }
 
 void CodeGenCHost::GenerateForwardFunctionDeclarations(String global_symbol,
@@ -454,22 +500,45 @@ void CodeGenCHost::PrintStaticInit(const AttrStmtNode* op) {
   std::string handle_name = static_init_name_supply_->FreshName("__tvm_static_handle");
   std::string callback_name = static_init_name_supply_->FreshName("__tvm_static_init_lambda");
 
-  if (static_init_declarations_.insert(initializer->value).second) {
-    decl_stream << "int32_t " << initializer->value
-                << "(void**, int32_t (*)(void*), void*, int32_t);\n";
+  if (static_init_declarations_sink_->insert(initializer->value).second) {
+    (*static_init_declaration_stream_sink_)
+        << "#ifdef __cplusplus\n"
+        << "extern \"C\"\n"
+        << "#endif\n"
+        << "int32_t " << initializer->value
+        << "(void**, int32_t (*)(void*), void*, int32_t);\n";
   }
-  decl_stream << "static void* " << handle_name << " = NULL;\n";
+  (*static_init_declaration_stream_sink_) << "static void* " << handle_name << " = NULL;\n";
+
+  // A callback is a separate C function.  Generate it with a separate codegen
+  // object so all per-function state (SSA bindings, variable ids, scopes,
+  // allocation types, and the name supply) is isolated from the enclosing
+  // entry function.  Swapping only `stream` is insufficient for LetStmt and
+  // Allocate bodies because those visitors mutate the other state as well.
+  CodeGenCHost callback_codegen;
+  callback_codegen.Init(output_ssa_, emit_asserts_, /*emit_fwd_func_decl=*/true, target_str_,
+                        devices_);
+  callback_codegen.static_init_name_supply_ = static_init_name_supply_;
+  callback_codegen.static_init_stream_sink_ = static_init_stream_sink_;
+  callback_codegen.static_init_declarations_sink_ = static_init_declarations_sink_;
+  callback_codegen.static_init_declaration_stream_sink_ = static_init_declaration_stream_sink_;
+  callback_codegen.InitFuncState(tir::PrimFunc({}, op->body));
+  int callback_scope = callback_codegen.BeginScope();
+  callback_codegen.PrintStmt(op->body);
+  callback_codegen.EndScope(callback_scope);
 
   std::ostringstream callback_body;
-  stream.swap(callback_body);
-  this->PrintStmt(op->body);
-  stream.swap(callback_body);
+  callback_body << callback_codegen.stream.str();
+  // Calls emitted in the isolated context may require declarations (for
+  // example VTAUopLoopBegin).  They belong before the static definitions.
+  fwd_decl_stream << callback_codegen.fwd_decl_stream.str();
 
-  static_init_stream_ << "static int32_t " << callback_name << "(void* closure_data) {\n"
-                      << callback_body.str();
-  static_init_stream_ << "  (void)closure_data;\n"
-                      << "  return 0;\n"
-                      << "}\n";
+  (*static_init_stream_sink_) << "static int32_t " << callback_name
+                              << "(void* closure_data) {\n"
+                              << callback_body.str();
+  (*static_init_stream_sink_) << "  (void)closure_data;\n"
+      << "  return 0;\n"
+      << "}\n";
 
   PrintIndent();
   stream << "if (" << initializer->value << "(&" << handle_name << ", " << callback_name

@@ -98,10 +98,21 @@ class CodeGenCHost : public CodeGenC {
 
   /*! \brief generated definitions for static coprocessor-uop callbacks */
   std::ostringstream static_init_stream_;
+  /*! \brief destination used by nested isolated callback contexts */
+  std::ostringstream* static_init_stream_sink_{nullptr};
   /*! \brief initializer declarations already emitted in this module */
   std::unordered_set<std::string> static_init_declarations_;
+  /*! \brief declaration set used by nested isolated callback contexts */
+  std::unordered_set<std::string>* static_init_declarations_sink_{nullptr};
+  /*! \brief declaration stream used by nested isolated callback contexts */
+  std::ostringstream* static_init_declaration_stream_sink_{nullptr};
   /*! \brief module-local names for static handles and callbacks */
   NameSupply static_init_name_supply_;
+
+  /*! \brief options shared with the isolated callback code generator */
+  bool output_ssa_{false};
+  std::string target_str_;
+  std::unordered_set<std::string> devices_;
 
   FunctionInfo GetFunctionInfo(const CallNode* op, bool has_resource_handle);
   std::string GetPackedName(const CallNode* op);
@@ -109,6 +120,8 @@ class CodeGenCHost : public CodeGenC {
   void PrintFuncCall(const std::string& packed_func_name, int num_args);
   void PrintFuncCallC(const std::string& packed_func_name, int num_args,
                       const std::string& resource_handle_name);
+  bool HasStaticInitScope(const Stmt& stmt) const;
+  bool ReturnsInt32(const Type& ret_type) const;
   void PrintStaticInit(const AttrStmtNode* op);
 
   /*!

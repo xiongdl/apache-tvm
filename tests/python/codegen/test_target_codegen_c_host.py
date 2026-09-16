@@ -18,6 +18,7 @@
 import tvm
 import tvm.testing
 import pytest
+import ctypes
 
 from tvm import te
 from tvm.contrib import utils
@@ -419,6 +420,138 @@ def test_c_host_static_uop_scope_rejects_captured_variables():
 
     with pytest.raises(tvm.error.TVMError, match="coproc_uop_scope"):
         _build_c_host_module(tvm.IRModule({"captured_scope": func}))
+
+
+def test_c_host_static_uop_scope_rejects_non_int32_entry():
+    ib = tvm.tir.ir_builder.create()
+    cp = te.thread_axis((0, 1), "cop")
+    ib.scope_attr(cp, "coproc_uop_scope", tvm.tir.StringImm("VTAPushGEMMOp"))
+    ib.emit(tvm.tir.Evaluate(tvm.tir.const(0, "int32")))
+    stmt = ib.get()
+    for name, func in [
+        ("non_int32", tvm.tir.PrimFunc([], stmt, tvm.ir.PrimType("int64"))),
+        ("void", tvm.tir.PrimFunc([], stmt)),
+    ]:
+        func = func.with_attr("global_symbol", name)
+        with pytest.raises(tvm.error.TVMError, match="int32-returning function"):
+            _build_c_host_module(tvm.IRModule({name: func}))
+
+
+def _make_c_uop_scope_state_module():
+    cp = te.thread_axis((0, 1), "cop")
+    local = tvm.tir.Var("local", "int32")
+    tmp = tvm.tir.Var("tmp", tvm.ir.PointerType(tvm.ir.PrimType("int32"), "global"))
+    callback_body = tvm.tir.LetStmt(
+        local,
+        tvm.tir.const(7, "int32"),
+        tvm.tir.Allocate(
+            tmp,
+            tvm.DataType("int32"),
+            [tvm.tir.const(4, "int32")],
+            tvm.tir.const(True, "bool"),
+            tvm.tir.Evaluate(
+                tvm.tir.call_extern("int32", "VTAUopLoopBegin", local, tvm.tir.const(0, "uint32"),
+                                    tvm.tir.const(0, "uint32"), tvm.tir.const(0, "uint32"))
+            ),
+        ),
+    )
+    scoped_body = tvm.tir.AttrStmt(
+        cp,
+        "coproc_uop_scope",
+        tvm.tir.StringImm("VTAPushGEMMOp"),
+        callback_body,
+    )
+    # This statement is deliberately outside the static scope.  It must stay
+    # in the entry function and must not inherit the callback's local state.
+    body = tvm.tir.SeqStmt(
+        [scoped_body, tvm.tir.Evaluate(tvm.tir.call_extern("int32", "VTAUopLoopEnd"))]
+    )
+    func = tvm.tir.PrimFunc([], body, tvm.ir.PrimType("int32")).with_attr(
+        "global_symbol", "state_scope"
+    )
+    return tvm.IRModule({"state_scope": func})
+
+
+def test_c_host_static_uop_scope_isolated_state_is_deterministic_and_compilable():
+    source = _build_c_host_module(_make_c_uop_scope_state_module()).get_source()
+    source_again = _build_c_host_module(_make_c_uop_scope_state_module()).get_source()
+    assert source == source_again
+    callback_start = source.index("static int32_t __tvm_static_init_lambda")
+    entry_start = source.index("TVM_DLL int32_t state_scope() {")
+    callback = source[callback_start:entry_start]
+    entry = source[entry_start:]
+    assert "int32_t local" in callback
+    assert "int32_t tmp" in callback
+    assert "VTAUopLoopEnd" in entry
+    assert entry.count("VTAUopLoopBegin") == 0
+
+
+def _make_c_uop_scope_support_module():
+    source = r'''
+#include "tvm/runtime/c_runtime_api.h"
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+static int32_t init_calls = 0;
+static int32_t body_calls = 0;
+int32_t uop_scope(void);
+int32_t VTAUopLoopBegin(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+  (void)a; (void)b; (void)c; (void)d; body_calls++;
+  return body_calls == 1 ? 0 : -9;
+}
+int32_t VTAUopLoopEnd(void) { return 0; }
+int32_t VTAPushGEMMOp(void** handle, int32_t (*callback)(void*), void* data, int32_t x) {
+  (void)handle; (void)data; (void)x; init_calls++;
+  if (init_calls > 1) return -7;
+  return callback(NULL);
+}
+TVM_DLL int32_t vta_test_invoke(TVMValue* args, int* arg_type_ids, int num_args,
+                                 TVMValue* out_ret_value, int* out_ret_tcode,
+                                 void* resource_handle) {
+  (void)args; (void)arg_type_ids; (void)num_args; (void)out_ret_value;
+  (void)out_ret_tcode; (void)resource_handle;
+  return uop_scope();
+}
+#ifdef __cplusplus
+}
+#endif
+'''
+    return tvm.runtime._ffi_api.CSourceModuleCreate(
+        source,
+        "c",
+        ["vta_test_invoke"],
+        None,
+    )
+
+
+def test_c_host_static_uop_scope_compiles_reloads_and_propagates_initializer_failure():
+    generated = _build_c_host_module(_make_c_uop_scope_module(["VTAPushGEMMOp"]))
+    support = _make_c_uop_scope_support_module()
+    module = tvm.runtime._ffi_api.CSourceModuleCreate(
+        generated.get_source() + support.get_source(),
+        "c",
+        ["vta_test_invoke"],
+        None,
+    )
+    temp = utils.tempdir()
+    path_dso = temp.relpath("static_uop_behavior.so")
+    module.export_library(path_dso)
+    # Call the exported packed ABI wrapper through the reloaded shared
+    # library.  This avoids relying on CSourceModule's single-symbol packed
+    # lookup while still exercising the exact exported ABI.
+    library = ctypes.CDLL(path_dso)
+    entry = library.vta_test_invoke
+    entry.restype = ctypes.c_int32
+    entry.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.c_int,
+                      ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.c_void_p]
+
+    # The support initializer invokes the generated callback on the first
+    # call, and deliberately returns a nonzero error before invoking it again.
+    # Thus a successful first call proves the callback path is linked, while
+    # the second call proves the packed entry propagates the initializer error.
+    assert entry(None, None, 0, None, None, None) == 0
+    assert entry(None, None, 0, None, None, None) == -1
 
 
 if __name__ == "__main__":
