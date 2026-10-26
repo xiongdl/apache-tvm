@@ -63,9 +63,9 @@ env = vta.get_env()
 # DCGAN workloads
 dcgan_wklds = [
     # dcgan
-    ("DCGAN.CT1", Workload(env.BATCH, 4, 4, 1024, 512, 4, 4, 1, 1, 2, 2, 0, 0)),
-    ("DCGAN.CT2", Workload(env.BATCH, 8, 8, 512, 256, 4, 4, 1, 1, 2, 2, 0, 0)),
-    ("DCGAN.CT3", Workload(env.BATCH, 16, 16, 256, 128, 4, 4, 1, 1, 2, 2, 0, 0)),
+    ("DCGAN.CT1", Workload(env.BLK_M, 4, 4, 1024, 512, 4, 4, 1, 1, 2, 2, 0, 0)),
+    ("DCGAN.CT2", Workload(env.BLK_M, 8, 8, 512, 256, 4, 4, 1, 1, 2, 2, 0, 0)),
+    ("DCGAN.CT3", Workload(env.BLK_M, 16, 16, 256, 128, 4, 4, 1, 1, 2, 2, 0, 0)),
 ]
 
 # FIXME: we need a custom clip operator to circumvent a pattern detection limitation
@@ -103,7 +103,7 @@ def run_conv2d_transpose(
         fschedule = topi.arm_cpu.schedule_conv2d_transpose_nchw
     elif "vta" in target.keys:
         data_pack = True
-        layout = "NCHW%dn%dc" % (env.BATCH, env.BLOCK_IN)
+        layout = "NCHW%dn%dc" % (env.BLK_M, env.BLK_K)
         fcompute = vta.top.conv2d_transpose_packed
         fschedule = vta.top.schedule_conv2d_transpose_packed
 
@@ -113,20 +113,20 @@ def run_conv2d_transpose(
     w_shape = (wl.in_filter, wl.out_filter, wl.hkernel, wl.wkernel)
     if data_pack:
         data_shape = (
-            wl.batch // env.BATCH,
-            wl.in_filter // env.BLOCK_IN,
+            wl.batch // env.BLK_M,
+            wl.in_filter // env.BLK_K,
             wl.height,
             wl.width,
-            env.BATCH,
-            env.BLOCK_IN,
+            env.BLK_M,
+            env.BLK_K,
         )
         kernel_shape = (
-            wl.out_filter // env.BLOCK_OUT,
-            wl.in_filter // env.BLOCK_IN,
+            wl.out_filter // env.BLK_N,
+            wl.in_filter // env.BLK_K,
             wl.hkernel,
             wl.wkernel,
-            env.BLOCK_OUT,
-            env.BLOCK_IN,
+            env.BLK_N,
+            env.BLK_K,
         )
     else:
         data_shape = a_shape
@@ -185,18 +185,18 @@ def run_conv2d_transpose(
     data_np, kernel_np, res_ref = get_ref_data()
     if data_pack:
         data_np = data_np.reshape(
-            wl.batch // env.BATCH,
-            env.BATCH,
-            wl.in_filter // env.BLOCK_IN,
-            env.BLOCK_IN,
+            wl.batch // env.BLK_M,
+            env.BLK_M,
+            wl.in_filter // env.BLK_K,
+            env.BLK_K,
             wl.height,
             wl.width,
         ).transpose((0, 2, 4, 5, 1, 3))
         kernel_np = kernel_np.reshape(
-            wl.in_filter // env.BLOCK_IN,
-            env.BLOCK_IN,
-            wl.out_filter // env.BLOCK_OUT,
-            env.BLOCK_OUT,
+            wl.in_filter // env.BLK_K,
+            env.BLK_K,
+            wl.out_filter // env.BLK_N,
+            env.BLK_N,
             wl.hkernel,
             wl.wkernel,
         ).transpose((2, 0, 4, 5, 3, 1))

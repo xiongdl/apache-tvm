@@ -49,8 +49,8 @@ def my_clip(x, a_min, a_max):
 
 
 def dense(N, CI, CO):
-    data_shape = (N // env.BATCH, CI // env.BLOCK_IN, env.BATCH, env.BLOCK_IN)
-    kernel_shape = (CO // env.BLOCK_OUT, CI // env.BLOCK_IN, env.BLOCK_OUT, env.BLOCK_IN)
+    data_shape = (N // env.BLK_M, CI // env.BLK_K, env.BLK_M, env.BLK_K)
+    kernel_shape = (CO // env.BLK_N, CI // env.BLK_K, env.BLK_N, env.BLK_K)
 
     data = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
     kernel = te.placeholder(kernel_shape, name="kernel", dtype=env.wgt_dtype)

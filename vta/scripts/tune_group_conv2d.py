@@ -50,15 +50,15 @@ Workload = namedtuple(
 
 # Mobilenet (grouped variant) workloads
 mobilenet_wkls = [
-    ("mobilenet.D1", Workload(env.BATCH, 112, 112, 32, 32, 2, 3, 3, 1, 1, 1, 1)),
-    ("mobilenet.D2", Workload(env.BATCH, 112, 112, 64, 64, 4, 3, 3, 1, 1, 2, 2)),
-    ("mobilenet.D3", Workload(env.BATCH, 56, 56, 128, 128, 8, 3, 3, 1, 1, 1, 1)),
-    ("mobilenet.D4", Workload(env.BATCH, 56, 56, 128, 128, 8, 3, 3, 1, 1, 2, 2)),
-    ("mobilenet.D5", Workload(env.BATCH, 28, 28, 256, 256, 16, 3, 3, 1, 1, 1, 1)),
-    ("mobilenet.D6", Workload(env.BATCH, 28, 28, 256, 256, 16, 3, 3, 1, 1, 2, 2)),
-    ("mobilenet.D7", Workload(env.BATCH, 14, 14, 512, 512, 32, 3, 3, 1, 1, 1, 1)),
-    ("mobilenet.D8", Workload(env.BATCH, 14, 14, 512, 512, 32, 3, 3, 1, 1, 2, 2)),
-    ("mobilenet.D9", Workload(env.BATCH, 7, 7, 1024, 1024, 64, 3, 3, 1, 1, 1, 1)),
+    ("mobilenet.D1", Workload(env.BLK_M, 112, 112, 32, 32, 2, 3, 3, 1, 1, 1, 1)),
+    ("mobilenet.D2", Workload(env.BLK_M, 112, 112, 64, 64, 4, 3, 3, 1, 1, 2, 2)),
+    ("mobilenet.D3", Workload(env.BLK_M, 56, 56, 128, 128, 8, 3, 3, 1, 1, 1, 1)),
+    ("mobilenet.D4", Workload(env.BLK_M, 56, 56, 128, 128, 8, 3, 3, 1, 1, 2, 2)),
+    ("mobilenet.D5", Workload(env.BLK_M, 28, 28, 256, 256, 16, 3, 3, 1, 1, 1, 1)),
+    ("mobilenet.D6", Workload(env.BLK_M, 28, 28, 256, 256, 16, 3, 3, 1, 1, 2, 2)),
+    ("mobilenet.D7", Workload(env.BLK_M, 14, 14, 512, 512, 32, 3, 3, 1, 1, 1, 1)),
+    ("mobilenet.D8", Workload(env.BLK_M, 14, 14, 512, 512, 32, 3, 3, 1, 1, 2, 2)),
+    ("mobilenet.D9", Workload(env.BLK_M, 7, 7, 1024, 1024, 64, 3, 3, 1, 1, 1, 1)),
 ]
 
 
@@ -75,9 +75,9 @@ def my_clip(x, a_min, a_max):
 def group_conv2d(N, CI, H, W, CO, KH, KW, strides, padding, dilation, group):
 
     CI_G = CI // groups
-    data_shape = (N // env.BATCH, CI // env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN)
-    kernel_shape = (CO // env.BLOCK_OUT, CI_G // env.BLOCK_IN, KH, KW, env.BLOCK_OUT, env.BLOCK_IN)
-    bias_shape = (N // env.BATCH, CO // env.BLOCK_OUT, 1, 1, env.BATCH, env.BLOCK_OUT)
+    data_shape = (N // env.BLK_M, CI // env.BLK_K, H, W, env.BLK_M, env.BLK_K)
+    kernel_shape = (CO // env.BLK_N, CI_G // env.BLK_K, KH, KW, env.BLK_N, env.BLK_K)
+    bias_shape = (N // env.BLK_M, CO // env.BLK_N, 1, 1, env.BLK_M, env.BLK_N)
 
     data = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
     kernel = te.placeholder(kernel_shape, name="kernel", dtype=env.wgt_dtype)

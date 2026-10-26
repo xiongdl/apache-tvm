@@ -44,7 +44,7 @@ below.
 +-----------------------+------------+--------------------------------------------------------+
 | ``LOG_ACC_WIDTH``     | Int (log2) | Accumulator data type signed integer width.            |
 +-----------------------+------------+--------------------------------------------------------+
-| ``LOG_BATCH``         | Int (log2) | VTA matrix multiply intrinsic input/output dimension 0.|
+| ``LOG_BLK_M``         | Int (log2) | VTA matrix multiply intrinsic input/output dimension 0.|
 +-----------------------+------------+--------------------------------------------------------+
 | ``LOG_BLOCK``         | Int (log2) | VTA matrix multiply inner dimensions.                  |
 +-----------------------+------------+--------------------------------------------------------+
@@ -69,5 +69,5 @@ We provide additional detail below regarding each parameter:
 
  - ``TARGET``: Can be set to ``"pynq"``, ``"ultra96"``, ``"sim"`` (fast simulator), or ``"tsim"`` (cycle accurate sim with verilator).
  - ``HW_VER``: Hardware version which increments every time the VTA hardware design changes. This parameter is used to uniquely identity hardware bitstreams.
- - ``LOG_BATCH``: Equivalent to A in multiplication of shape (A, B) x (B, C), or typically, the batch dimension of inner tensor computation.
+ - ``LOG_BLK_M``: Equivalent to A in multiplication of shape (A, B) x (B, C), or typically, the batch dimension of inner tensor computation.
  - ``LOG_BLOCK``: Equivalent to B and C in multiplication of shape (A, B) x (B, C), or typically, the input/output channel dimensions of the inner tensor computation.

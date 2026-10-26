@@ -197,7 +197,7 @@ with autotvm.tophub.context(target):
     net = __darknetffi__.dlopen(darknet_lib_path).load_network(
         cfg_path.encode("utf-8"), weights_path.encode("utf-8"), 0
     )
-    dshape = (env.BATCH, net.c, net.h, net.w)
+    dshape = (env.BLK_M, net.c, net.h, net.w)
     dtype = "float32"
 
     # Measure build start time
@@ -220,8 +220,8 @@ with autotvm.tophub.context(target):
             # Perform graph packing and constant folding for VTA target
             mod = graph_pack(
                 mod["main"],
-                env.BATCH,
-                env.BLOCK_OUT,
+                env.BLK_M,
+                env.BLK_N,
                 env.WGT_WIDTH,
                 start_name=pack_dict[MODEL_NAME][0],
                 stop_name=pack_dict[MODEL_NAME][1],
@@ -266,7 +266,7 @@ plt.imshow(data)
 plt.show()
 data = data.transpose((2, 0, 1))
 data = data[np.newaxis, :]
-data = np.repeat(data, env.BATCH, axis=0)
+data = np.repeat(data, env.BLK_M, axis=0)
 
 # Set the network parameters and inputs
 m.set_input("data", data)
@@ -291,8 +291,8 @@ else:
     tcost = timer()
     std = np.std(tcost.results) * 1000
     mean = tcost.mean * 1000
-    print("\nPerformed inference in %.2fms (std = %.2f) for %d samples" % (mean, std, env.BATCH))
-    print("Average per sample inference time: %.2fms" % (mean / env.BATCH))
+    print("\nPerformed inference in %.2fms (std = %.2f) for %d samples" % (mean, std, env.BLK_M))
+    print("Average per sample inference time: %.2fms" % (mean / env.BLK_M))
 
 # Get detection results from out
 thresh = 0.5

@@ -653,16 +653,16 @@ def InjectDMAIntrin():
 def _get_gemm_intrin_buffer():
     env = get_env()
     wgt_lanes = env.WGT_ELEM_BITS // env.WGT_WIDTH
-    assert wgt_lanes == env.BLOCK_OUT * env.BLOCK_IN
-    wgt_shape = (env.BLOCK_OUT, env.BLOCK_IN)
+    assert wgt_lanes == env.BLK_N * env.BLK_K
+    wgt_shape = (env.BLK_N, env.BLK_K)
     assert wgt_shape[0] * wgt_shape[1] == wgt_lanes
     inp_lanes = env.INP_ELEM_BITS // env.INP_WIDTH
-    assert inp_lanes == env.BATCH * env.BLOCK_IN
-    inp_shape = (env.BATCH, env.BLOCK_IN)
+    assert inp_lanes == env.BLK_M * env.BLK_K
+    inp_shape = (env.BLK_M, env.BLK_K)
     assert inp_shape[0] * inp_shape[1] == inp_lanes
     out_lanes = env.ACC_ELEM_BITS // env.ACC_WIDTH
-    assert out_lanes == env.BATCH * env.BLOCK_OUT
-    out_shape = (env.BATCH, env.BLOCK_OUT)
+    assert out_lanes == env.BLK_M * env.BLK_N
+    out_shape = (env.BLK_M, env.BLK_N)
     assert out_shape[0] * out_shape[1] == out_lanes
     wgt = te.placeholder(
         (wgt_shape[0], wgt_shape[1]), dtype="int%d" % env.WGT_WIDTH, name=env.wgt_scope
@@ -759,7 +759,7 @@ def InjectConv2DTransposeSkip():
                         body = body.then_case
                     args = body.indices
                     res_buffer = body.buffer
-                    tpl = (args[0], 1, args[1], 1, args[2], 1, args[3], 1, 0, 1, 0, env.BLOCK_OUT)
+                    tpl = (args[0], 1, args[1], 1, args[2], 1, args[3], 1, 0, 1, 0, env.BLK_N)
                     inner = tvm.tir.AttrStmt(
                         [dout, res_buffer],
                         "buffer_bind_scope",
@@ -803,7 +803,7 @@ def InjectConv2DTransposeSkip():
                     inner = irb.get()
 
                     args = conv_call.indices
-                    tpl = (args[0], 1, args[1], 1, args[2], 1, args[3], 1, 0, 1, 0, env.BLOCK_OUT)
+                    tpl = (args[0], 1, args[1], 1, args[2], 1, args[3], 1, 0, 1, 0, env.BLK_N)
                     inner = tvm.tir.AttrStmt(
                         [dout, res_tensor],
                         "buffer_bind_scope",
@@ -821,9 +821,9 @@ def InjectConv2DTransposeSkip():
                         args[3],
                         1,
                         0,
-                        env.BLOCK_OUT,
+                        env.BLK_N,
                         0,
-                        env.BLOCK_IN,
+                        env.BLK_K,
                     )
                     inner = tvm.tir.AttrStmt(
                         [dwgt, kernel_tensor],
@@ -832,7 +832,7 @@ def InjectConv2DTransposeSkip():
                         inner,
                     )
                     args = data_call.indices
-                    tpl = (args[0], 1, args[1], 1, args[2], 1, args[3], 1, 0, 1, 0, env.BLOCK_IN)
+                    tpl = (args[0], 1, args[1], 1, args[2], 1, args[3], 1, 0, 1, 0, env.BLK_K)
                     inner = tvm.tir.AttrStmt(
                         [dinp, pad_data_tensor],
                         "buffer_bind_scope",
@@ -1046,24 +1046,24 @@ def InjectALUIntrin():
                 assert len(dst_coeff) > 1
                 assert len(extents) != 0
                 tvm.ir.assert_structural_equal(
-                    analyzer.simplify(idxm(src_coeff[-1], env.BATCH * env.BLOCK_OUT)), 0
+                    analyzer.simplify(idxm(src_coeff[-1], env.BLK_M * env.BLK_N)), 0
                 )
                 tvm.ir.assert_structural_equal(
-                    analyzer.simplify(idxm(dst_coeff[-1], env.BATCH * env.BLOCK_OUT)), 0
+                    analyzer.simplify(idxm(dst_coeff[-1], env.BLK_M * env.BLK_N)), 0
                 )
                 tvm.ir.assert_structural_equal(src_coeff[-2], 1)
                 tvm.ir.assert_structural_equal(dst_coeff[-2], 1)
-                if env.BATCH > 1:
+                if env.BLK_M > 1:
                     assert len(src_coeff) > 2
                     assert len(dst_coeff) > 2
                     assert len(extents) > 1
-                    tvm.ir.assert_structural_equal(src_coeff[-3], env.BLOCK_OUT)
-                    tvm.ir.assert_structural_equal(dst_coeff[-3], env.BLOCK_OUT)
+                    tvm.ir.assert_structural_equal(src_coeff[-3], env.BLK_N)
+                    tvm.ir.assert_structural_equal(dst_coeff[-3], env.BLK_N)
 
                 # Apply tensorization of the loop coefficients
                 src_offset = src_coeff[-1]
                 dst_offset = dst_coeff[-1]
-                if env.BATCH == 1:
+                if env.BLK_M == 1:
                     src_coeff = src_coeff[:-2]
                     dst_coeff = dst_coeff[:-2]
                     extents = extents[:-1]
@@ -1073,8 +1073,8 @@ def InjectALUIntrin():
                     extents = extents[:-2]
                 src_coeff.append(src_offset)
                 dst_coeff.append(dst_offset)
-                src_coeff = [analyzer.simplify(c // (env.BATCH * env.BLOCK_OUT)) for c in src_coeff]
-                dst_coeff = [analyzer.simplify(c // (env.BATCH * env.BLOCK_OUT)) for c in dst_coeff]
+                src_coeff = [analyzer.simplify(c // (env.BLK_M * env.BLK_N)) for c in src_coeff]
+                dst_coeff = [analyzer.simplify(c // (env.BLK_M * env.BLK_N)) for c in dst_coeff]
 
                 # Flatten the outer loops
                 if extents:

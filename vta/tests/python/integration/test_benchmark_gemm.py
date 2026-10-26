@@ -25,19 +25,19 @@ from vta.testing import simulator
 
 def test_gemm():
     def run_gemm_packed(env, remote, batch_size, channel, block):
-        data_shape = (batch_size // env.BATCH, channel // env.BLOCK_IN, env.BATCH, env.BLOCK_IN)
+        data_shape = (batch_size // env.BLK_M, channel // env.BLK_K, env.BLK_M, env.BLK_K)
         weight_shape = (
-            channel // env.BLOCK_OUT,
-            channel // env.BLOCK_IN,
-            env.BLOCK_OUT,
-            env.BLOCK_IN,
+            channel // env.BLK_N,
+            channel // env.BLK_K,
+            env.BLK_N,
+            env.BLK_K,
         )
-        res_shape = (batch_size // env.BATCH, channel // env.BLOCK_OUT, env.BATCH, env.BLOCK_OUT)
+        res_shape = (batch_size // env.BLK_M, channel // env.BLK_N, env.BLK_M, env.BLK_N)
         # To compute number of ops, use a x2 factor for FMA
         num_ops = 2 * channel * channel * batch_size
 
-        ko = te.reduce_axis((0, channel // env.BLOCK_IN), name="ko")
-        ki = te.reduce_axis((0, env.BLOCK_IN), name="ki")
+        ko = te.reduce_axis((0, channel // env.BLK_K), name="ko")
+        ki = te.reduce_axis((0, env.BLK_K), name="ki")
 
         data = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
         weight = te.placeholder(weight_shape, name="weight", dtype=env.wgt_dtype)
@@ -76,19 +76,19 @@ def test_gemm():
             data_orig = np.random.randint(-128, 128, size=(batch_size, channel)).astype(data.dtype)
             weight_orig = np.random.randint(-128, 128, size=(channel, channel)).astype(weight.dtype)
             data_packed = data_orig.reshape(
-                batch_size // env.BATCH, env.BATCH, channel // env.BLOCK_IN, env.BLOCK_IN
+                batch_size // env.BLK_M, env.BLK_M, channel // env.BLK_K, env.BLK_K
             ).transpose((0, 2, 1, 3))
             weight_packed = weight_orig.reshape(
-                channel // env.BLOCK_OUT, env.BLOCK_OUT, channel // env.BLOCK_IN, env.BLOCK_IN
+                channel // env.BLK_N, env.BLK_N, channel // env.BLK_K, env.BLK_K
             ).transpose((0, 2, 1, 3))
             res_np = np.zeros(res_shape).astype(res.dtype)
             data_arr = tvm.nd.array(data_packed, dev)
             weight_arr = tvm.nd.array(weight_packed, dev)
             res_arr = tvm.nd.array(res_np, dev)
             res_ref = np.zeros(res_shape).astype(env.acc_dtype)
-            for b in range(batch_size // env.BATCH):
-                for i in range(channel // env.BLOCK_OUT):
-                    for j in range(channel // env.BLOCK_IN):
+            for b in range(batch_size // env.BLK_M):
+                for i in range(channel // env.BLK_N):
+                    for j in range(channel // env.BLK_K):
                         res_ref[b, i, :] += np.dot(
                             data_packed[b, j, :].astype(env.acc_dtype),
                             weight_packed[i, j].T.astype(env.acc_dtype),
@@ -105,7 +105,7 @@ def test_gemm():
                 for k, v in stats.items():
                     print("\t{:<16}: {:>16}".format(k, v))
             res_unpack = res_arr.numpy().reshape(
-                batch_size // env.BATCH, channel // env.BLOCK_OUT, env.BATCH, env.BLOCK_OUT
+                batch_size // env.BLK_M, channel // env.BLK_N, env.BLK_M, env.BLK_N
             )
             return cost
 
@@ -119,9 +119,9 @@ def test_gemm():
             s[res_max].set_scope(env.acc_scope)
 
             if block:
-                bblock = block // env.BATCH
-                iblock = block // env.BLOCK_IN
-                oblock = block // env.BLOCK_OUT
+                bblock = block // env.BLK_M
+                iblock = block // env.BLK_K
+                oblock = block // env.BLK_N
                 xbo, xco, xbi, xci = s[res].op.axis
                 xb1, xco1, xb2, xco2 = s[res].tile(xbo, xco, bblock, oblock)
                 store_pt = xb2

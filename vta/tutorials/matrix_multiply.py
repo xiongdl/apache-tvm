@@ -113,10 +113,10 @@ elif env.TARGET in ["sim", "tsim"]:
 #
 #   The dimensions of that matrix-matrix multiplication are specified in
 #   the :code:`vta_config.json` configuration file.
-#   The activation matrix has a :code:`(BATCH, BLOCK_IN)` shape
-#   and the transposed weight matrix has a :code:`(BLOCK_OUT, BLOCK_IN)` shape,
+#   The activation matrix has a :code:`(BLK_M, BLK_K)` shape
+#   and the transposed weight matrix has a :code:`(BLK_N, BLK_K)` shape,
 #   thus inferring that the resulting output matrix has a
-#   :code:`(BATCH, BLOCK_OUT)` shape.
+#   :code:`(BLK_M, BLK_N)` shape.
 #   Consequently input and output tensors processed by VTA need to be
 #   tiled according to these aforementioned dimension.
 #
@@ -132,10 +132,10 @@ elif env.TARGET in ["sim", "tsim"]:
 #
 # We first define the variables :code:`m`, :code:`n`, :code:`o` to represent
 # the shape of the matrix multiplication. These variables are multiplicative
-# factors over the :code:`BLOCK_OUT`, :code:`BLOCK_IN`, and :code:`BATCH`
+# factors over the :code:`BLK_N`, :code:`BLK_K`, and :code:`BLK_M`
 # tensor dimensions respectively.
-# By default, the configuration file sets :code:`BATCH`, :code:`BLOCK_IN`, and
-# :code:`BLOCK_OUT` to be 1, 16 and 16 respectively (:code:`BATCH` being set to
+# By default, the configuration file sets :code:`BLK_M`, :code:`BLK_K`, and
+# :code:`BLK_N` to be 1, 16 and 16 respectively (:code:`BLK_M` being set to
 # 1 implies that our compute building block is vector-matrix multiply).
 #
 
@@ -168,13 +168,13 @@ n = 16
 # Batch factor o (we use single batch inference)
 o = 1
 # A placeholder tensor in tiled data format
-A = te.placeholder((o, n, env.BATCH, env.BLOCK_IN), name="A", dtype=env.inp_dtype)
+A = te.placeholder((o, n, env.BLK_M, env.BLK_K), name="A", dtype=env.inp_dtype)
 # B placeholder tensor in tiled data format
-B = te.placeholder((m, n, env.BLOCK_OUT, env.BLOCK_IN), name="B", dtype=env.wgt_dtype)
+B = te.placeholder((m, n, env.BLK_N, env.BLK_K), name="B", dtype=env.wgt_dtype)
 # A copy buffer
-A_buf = te.compute((o, n, env.BATCH, env.BLOCK_IN), lambda *i: A(*i), "A_buf")
+A_buf = te.compute((o, n, env.BLK_M, env.BLK_K), lambda *i: A(*i), "A_buf")
 # B copy buffer
-B_buf = te.compute((m, n, env.BLOCK_OUT, env.BLOCK_IN), lambda *i: B(*i), "B_buf")
+B_buf = te.compute((m, n, env.BLK_N, env.BLK_K), lambda *i: B(*i), "B_buf")
 
 ######################################################################
 # Matrix Multiplication
@@ -201,10 +201,10 @@ B_buf = te.compute((m, n, env.BLOCK_OUT, env.BLOCK_IN), lambda *i: B(*i), "B_buf
 # Outer input feature reduction axis
 ko = te.reduce_axis((0, n), name="ko")
 # Inner input feature reduction axis
-ki = te.reduce_axis((0, env.BLOCK_IN), name="ki")
+ki = te.reduce_axis((0, env.BLK_K), name="ki")
 # Describe the in-VTA matrix multiplication
 C_buf = te.compute(
-    (o, m, env.BATCH, env.BLOCK_OUT),
+    (o, m, env.BLK_M, env.BLK_N),
     lambda bo, co, bi, ci: te.sum(
         A_buf[bo, ko, bi, ki].astype(env.acc_dtype) * B_buf[co, ko, ci, ki].astype(env.acc_dtype),
         axis=[ko, ki],
@@ -237,7 +237,7 @@ C_buf = te.compute(
 
 # Cast to output type, and send to main memory
 C = te.compute(
-    (o, m, env.BATCH, env.BLOCK_OUT), lambda *i: C_buf(*i).astype(env.inp_dtype), name="C"
+    (o, m, env.BLK_M, env.BLK_N), lambda *i: C_buf(*i).astype(env.inp_dtype), name="C"
 )
 
 ######################################################################
@@ -298,17 +298,17 @@ print(tvm.lower(s, [A, B, C], simple_mode=True))
 #   on-chip SRAM buffers.
 #
 #    - :code:`env.inp_scope`: Input buffer, which is a read-only SRAM buffer
-#      that stores input matrices of shape :code:`(env.BATCH, env.BLOCK_IN)`
+#      that stores input matrices of shape :code:`(env.BLK_M, env.BLK_K)`
 #      of type :code:`env.inp_dtype`. The input buffer contains
 #      `2 ^ LOG_INP_BUFF_SIZE` matrix elements (as specified in the
 #      :code:`vta_config.json` file).
 #    - :code:`env.wgt_scope`: Weight buffer, which is a read-only SRAM buffer
-#      that stores weight matrices of shape :code:`(env.BLOCK_OUT, env.BLOCK_IN)`
+#      that stores weight matrices of shape :code:`(env.BLK_N, env.BLK_K)`
 #      of type :code:`env.wgt_dtype`. The weight buffer contains
 #      `2 ^ LOG_WGT_BUFF_SIZE` matrix elements.
 #    - :code:`env.acc_scope`: Accumulator buffer, which is a read/write SRAM
 #      buffer that stores accumulator matrices of shape
-#      :code:`(env.BATCH, env.BLOCK_OUT)` of type :code:`env.acc_dtype`.
+#      :code:`(env.BLK_M, env.BLK_N)` of type :code:`env.acc_dtype`.
 #      The accumulator buffer is VTA's general purpose register file: it holds
 #      both intermediate results of convolutions and matrix multiplications
 #      as well as intermediate results of pooling, batch normalization, and
@@ -420,17 +420,17 @@ f = remote.load_module("gemm.o")
 ctx = remote.ext_dev(0)
 
 # Initialize the A and B arrays randomly in the int range of (-128, 128]
-A_orig = np.random.randint(-128, 128, size=(o * env.BATCH, n * env.BLOCK_IN)).astype(A.dtype)
-B_orig = np.random.randint(-128, 128, size=(m * env.BLOCK_OUT, n * env.BLOCK_IN)).astype(B.dtype)
+A_orig = np.random.randint(-128, 128, size=(o * env.BLK_M, n * env.BLK_K)).astype(A.dtype)
+B_orig = np.random.randint(-128, 128, size=(m * env.BLK_N, n * env.BLK_K)).astype(B.dtype)
 
 # Apply packing to the A and B arrays from a 2D to a 4D packed layout
-A_packed = A_orig.reshape(o, env.BATCH, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
-B_packed = B_orig.reshape(m, env.BLOCK_OUT, n, env.BLOCK_IN).transpose((0, 2, 1, 3))
+A_packed = A_orig.reshape(o, env.BLK_M, n, env.BLK_K).transpose((0, 2, 1, 3))
+B_packed = B_orig.reshape(m, env.BLK_N, n, env.BLK_K).transpose((0, 2, 1, 3))
 
 # Format the input/output arrays with tvm.nd.array to the DLPack standard
 A_nd = tvm.nd.array(A_packed, ctx)
 B_nd = tvm.nd.array(B_packed, ctx)
-C_nd = tvm.nd.array(np.zeros((o, m, env.BATCH, env.BLOCK_OUT)).astype(C.dtype), ctx)
+C_nd = tvm.nd.array(np.zeros((o, m, env.BLK_M, env.BLK_N)).astype(C.dtype), ctx)
 
 # Clear stats
 if env.TARGET in ["sim", "tsim"]:
@@ -447,7 +447,7 @@ f(A_nd, B_nd, C_nd)
 
 # Compute reference result with numpy
 C_ref = np.dot(A_orig.astype(env.acc_dtype), B_orig.T.astype(env.acc_dtype)).astype(C.dtype)
-C_ref = C_ref.reshape(o, env.BATCH, m, env.BLOCK_OUT).transpose((0, 2, 1, 3))
+C_ref = C_ref.reshape(o, env.BLK_M, m, env.BLK_N).transpose((0, 2, 1, 3))
 np.testing.assert_equal(C_ref, C_nd.numpy())
 
 # Print stats
