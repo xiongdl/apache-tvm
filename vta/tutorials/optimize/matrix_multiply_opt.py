@@ -81,7 +81,7 @@ elif env.TARGET in ["sim", "tsim"]:
 # fully connected layer, defined by its batch size, input channels, and output
 # channels.
 # These have to be integer multiples of the VTA tensor shape:
-# :code:`BATCH`, :code:`BLOCK_IN`, and :code:`BLOCK_OUT` respectively.
+# :code:`BLK_M`, :code:`BLK_K`, and :code:`BLK_N` respectively.
 #
 # We've added extra operators to the matrix multiplication that apply
 # shifting and clipping to the output in order to mimic a fixed-point
@@ -100,24 +100,24 @@ elif env.TARGET in ["sim", "tsim"]:
 batch_size = 1
 in_channels = 1024
 out_channels = 1024
-assert batch_size % env.BATCH == 0
-assert in_channels % env.BLOCK_IN == 0
-assert out_channels % env.BLOCK_OUT == 0
+assert batch_size % env.BLK_M == 0
+assert in_channels % env.BLK_K == 0
+assert out_channels % env.BLK_N == 0
 
 # Let's derive the tiled input tensor shapes
-data_shape = (batch_size // env.BATCH, in_channels // env.BLOCK_IN, env.BATCH, env.BLOCK_IN)
+data_shape = (batch_size // env.BLK_M, in_channels // env.BLK_K, env.BLK_M, env.BLK_K)
 weight_shape = (
-    out_channels // env.BLOCK_OUT,
-    in_channels // env.BLOCK_IN,
-    env.BLOCK_OUT,
-    env.BLOCK_IN,
+    out_channels // env.BLK_N,
+    in_channels // env.BLK_K,
+    env.BLK_N,
+    env.BLK_K,
 )
-output_shape = (batch_size // env.BATCH, out_channels // env.BLOCK_OUT, env.BATCH, env.BLOCK_OUT)
+output_shape = (batch_size // env.BLK_M, out_channels // env.BLK_N, env.BLK_M, env.BLK_N)
 num_ops = in_channels * out_channels * batch_size * 2
 
 # Reduction axes
-ic = te.reduce_axis((0, in_channels // env.BLOCK_IN), name="ic")
-ic_tns = te.reduce_axis((0, env.BLOCK_IN), name="ic_tns")
+ic = te.reduce_axis((0, in_channels // env.BLK_K), name="ic")
+ic_tns = te.reduce_axis((0, env.BLK_K), name="ic_tns")
 
 # Input placeholder tensors
 data = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
@@ -222,9 +222,9 @@ print(tvm.lower(s, [data, weight, res], simple_mode=True))
 #      }
 
 # Let's define tiling sizes (expressed in multiples of VTA tensor shape size)
-b_block = 1 // env.BATCH
-i_block = 256 // env.BLOCK_IN
-o_block = 256 // env.BLOCK_OUT
+b_block = 1 // env.BLK_M
+i_block = 256 // env.BLK_K
+o_block = 256 // env.BLK_N
 
 # Tile the output tensor along the batch and output channel dimensions
 # (since by default we are doing single batch inference, the split along
@@ -327,10 +327,10 @@ weight_np = np.random.randint(-128, 128, size=(out_channels, in_channels)).astyp
 
 # Apply packing to the data and weight arrays from a 2D to a 4D packed layout
 data_packed = data_np.reshape(
-    batch_size // env.BATCH, env.BATCH, in_channels // env.BLOCK_IN, env.BLOCK_IN
+    batch_size // env.BLK_M, env.BLK_M, in_channels // env.BLK_K, env.BLK_K
 ).transpose((0, 2, 1, 3))
 weight_packed = weight_np.reshape(
-    out_channels // env.BLOCK_OUT, env.BLOCK_OUT, in_channels // env.BLOCK_IN, env.BLOCK_IN
+    out_channels // env.BLK_N, env.BLK_N, in_channels // env.BLK_K, env.BLK_K
 ).transpose((0, 2, 1, 3))
 
 # Format the input/output arrays with tvm.nd.array to the DLPack standard
@@ -351,7 +351,7 @@ res_ref = res_ref >> env.INP_WIDTH
 res_ref = np.clip(res_ref, 0, inp_max)
 res_ref = res_ref.astype(res.dtype)
 res_ref = res_ref.reshape(
-    batch_size // env.BATCH, env.BATCH, out_channels // env.BLOCK_OUT, env.BLOCK_OUT
+    batch_size // env.BLK_M, env.BLK_M, out_channels // env.BLK_N, env.BLK_N
 ).transpose((0, 2, 1, 3))
 np.testing.assert_equal(res_ref, res_nd.numpy())
 

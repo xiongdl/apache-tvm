@@ -53,9 +53,9 @@ Workload = namedtuple(
 # DCGAN workloads
 dcgan_wkls = [
     # dcgan
-    ("DCGAN.CT1", Workload(env.BATCH, 4, 4, 1024, 512, 4, 4, 1, 1, 2, 2, 0, 0)),
-    ("DCGAN.CT2", Workload(env.BATCH, 8, 8, 512, 256, 4, 4, 1, 1, 2, 2, 0, 0)),
-    ("DCGAN.CT3", Workload(env.BATCH, 16, 16, 256, 128, 4, 4, 1, 1, 2, 2, 0, 0)),
+    ("DCGAN.CT1", Workload(env.BLK_M, 4, 4, 1024, 512, 4, 4, 1, 1, 2, 2, 0, 0)),
+    ("DCGAN.CT2", Workload(env.BLK_M, 8, 8, 512, 256, 4, 4, 1, 1, 2, 2, 0, 0)),
+    ("DCGAN.CT3", Workload(env.BLK_M, 16, 16, 256, 128, 4, 4, 1, 1, 2, 2, 0, 0)),
 ]
 
 
@@ -70,8 +70,8 @@ def my_clip(x, a_min, a_max):
 
 
 def conv2d_transpose(N, CI, H, W, CO, KH, KW, strides, padding, opadding):
-    data_shape = (N // env.BATCH, CI // env.BLOCK_IN, H, W, env.BATCH, env.BLOCK_IN)
-    kernel_shape = (CO // env.BLOCK_OUT, CI // env.BLOCK_IN, KH, KW, env.BLOCK_OUT, env.BLOCK_IN)
+    data_shape = (N // env.BLK_M, CI // env.BLK_K, H, W, env.BLK_M, env.BLK_K)
+    kernel_shape = (CO // env.BLK_N, CI // env.BLK_K, KH, KW, env.BLK_N, env.BLK_K)
 
     data = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
     kernel = te.placeholder(kernel_shape, name="kernel", dtype=env.wgt_dtype)

@@ -33,12 +33,12 @@ def test_save_load_out():
 
     def _run(env, remote):
         n = 6
-        x = te.placeholder((n, n, env.BATCH, env.BLOCK_OUT), name="x", dtype=env.acc_dtype)
-        x_buf = te.compute((n, n, env.BATCH, env.BLOCK_OUT), lambda *i: x(*i), "x_buf")
+        x = te.placeholder((n, n, env.BLK_M, env.BLK_N), name="x", dtype=env.acc_dtype)
+        x_buf = te.compute((n, n, env.BLK_M, env.BLK_N), lambda *i: x(*i), "x_buf")
         # insert no-op that won't be optimized away
-        y_buf = te.compute((n, n, env.BATCH, env.BLOCK_OUT), lambda *i: x_buf(*i) >> 0, "y_buf")
+        y_buf = te.compute((n, n, env.BLK_M, env.BLK_N), lambda *i: x_buf(*i) >> 0, "y_buf")
         y = te.compute(
-            (n, n, env.BATCH, env.BLOCK_OUT), lambda *i: y_buf(*i).astype(env.inp_dtype), "y"
+            (n, n, env.BLK_M, env.BLK_N), lambda *i: y_buf(*i).astype(env.inp_dtype), "y"
         )
         # schedule
         s = te.create_schedule(y.op)
@@ -60,7 +60,7 @@ def test_save_load_out():
         f = remote.load_module("load_act.o")
         # verify
         dev = remote.ext_dev(0)
-        x_np = np.random.randint(1, 10, size=(n, n, env.BATCH, env.BLOCK_OUT)).astype(x.dtype)
+        x_np = np.random.randint(1, 10, size=(n, n, env.BLK_M, env.BLK_N)).astype(x.dtype)
         y_np = x_np.astype(y.dtype)
         x_nd = tvm.nd.array(x_np, dev)
         y_nd = tvm.nd.empty(y_np.shape, device=dev, dtype=y_np.dtype)
@@ -89,15 +89,15 @@ def test_padded_load():
             # declare
             n = 3
             m = 5
-            x = te.placeholder((n, m, env.BATCH, env.BLOCK_OUT), name="x", dtype=env.acc_dtype)
+            x = te.placeholder((n, m, env.BLK_M, env.BLK_N), name="x", dtype=env.acc_dtype)
             x_buf = topi.nn.pad(x, pad_before, pad_after, name="y")
             # insert no-op that won't be optimized away
             y_buf = te.compute(
                 (
                     n + pad_before[0] + pad_after[0],
                     m + pad_before[1] + pad_after[1],
-                    env.BATCH,
-                    env.BLOCK_OUT,
+                    env.BLK_M,
+                    env.BLK_N,
                 ),
                 lambda *i: x_buf(*i) >> 0,
                 "y_buf",
@@ -106,8 +106,8 @@ def test_padded_load():
                 (
                     n + pad_before[0] + pad_after[0],
                     m + pad_before[1] + pad_after[1],
-                    env.BATCH,
-                    env.BLOCK_OUT,
+                    env.BLK_M,
+                    env.BLK_N,
                 ),
                 lambda *i: y_buf(*i).astype(env.inp_dtype),
                 "y",
@@ -131,13 +131,13 @@ def test_padded_load():
             f = remote.load_module("padded_load.o")
             # verify
             dev = remote.ext_dev(0)
-            x_np = np.random.randint(0, 10, size=(n, m, env.BATCH, env.BLOCK_OUT)).astype(x.dtype)
+            x_np = np.random.randint(0, 10, size=(n, m, env.BLK_M, env.BLK_N)).astype(x.dtype)
             y_np = np.zeros(
                 (
                     n + pad_before[0] + pad_after[0],
                     m + pad_before[1] + pad_after[1],
-                    env.BATCH,
-                    env.BLOCK_OUT,
+                    env.BLK_M,
+                    env.BLK_N,
                 )
             ).astype(y.dtype)
             y_np[pad_before[0] : pad_before[0] + n, pad_before[1] : pad_before[1] + m, :] = x_np
@@ -174,14 +174,14 @@ def test_gemm():
         o = 4
         n = 1
         m = 4
-        x = te.placeholder((o, n, env.BATCH, env.BLOCK_IN), name="x", dtype=env.inp_dtype)
-        w = te.placeholder((m, n, env.BLOCK_OUT, env.BLOCK_IN), name="w", dtype=env.wgt_dtype)
-        x_buf = te.compute((o, n, env.BATCH, env.BLOCK_IN), lambda *i: x(*i), "x_buf")
-        w_buf = te.compute((m, n, env.BLOCK_OUT, env.BLOCK_IN), lambda *i: w(*i), "w_buf")
+        x = te.placeholder((o, n, env.BLK_M, env.BLK_K), name="x", dtype=env.inp_dtype)
+        w = te.placeholder((m, n, env.BLK_N, env.BLK_K), name="w", dtype=env.wgt_dtype)
+        x_buf = te.compute((o, n, env.BLK_M, env.BLK_K), lambda *i: x(*i), "x_buf")
+        w_buf = te.compute((m, n, env.BLK_N, env.BLK_K), lambda *i: w(*i), "w_buf")
         ko = te.reduce_axis((0, n), name="ko")
-        ki = te.reduce_axis((0, env.BLOCK_IN), name="ki")
+        ki = te.reduce_axis((0, env.BLK_K), name="ki")
         y_gem = te.compute(
-            (o, m, env.BATCH, env.BLOCK_OUT),
+            (o, m, env.BLK_M, env.BLK_N),
             lambda bo, co, bi, ci: te.sum(
                 x_buf[bo, ko, bi, ki].astype(env.acc_dtype)
                 * w_buf[co, ko, ci, ki].astype(env.acc_dtype),
@@ -190,18 +190,18 @@ def test_gemm():
             name="y_gem",
         )
         y_shf = te.compute(
-            (o, m, env.BATCH, env.BLOCK_OUT), lambda *i: y_gem(*i) >> 8, name="y_shf"
+            (o, m, env.BLK_M, env.BLK_N), lambda *i: y_gem(*i) >> 8, name="y_shf"
         )
         y_max = te.compute(
-            (o, m, env.BATCH, env.BLOCK_OUT), lambda *i: tvm.te.max(y_shf(*i), 0), "y_max"
+            (o, m, env.BLK_M, env.BLK_N), lambda *i: tvm.te.max(y_shf(*i), 0), "y_max"
         )  # relu
         y_min = te.compute(
-            (o, m, env.BATCH, env.BLOCK_OUT),
+            (o, m, env.BLK_M, env.BLK_N),
             lambda *i: tvm.te.min(y_max(*i), (1 << (env.INP_WIDTH - 1)) - 1),
             "y_min",
         )  # relu
         y = te.compute(
-            (o, m, env.BATCH, env.BLOCK_OUT), lambda *i: y_min(*i).astype(env.inp_dtype), name="y"
+            (o, m, env.BLK_M, env.BLK_N), lambda *i: y_min(*i).astype(env.inp_dtype), name="y"
         )
 
         if not remote:
@@ -217,13 +217,13 @@ def test_gemm():
             f = remote.load_module("gemm.o")
             # verify
             dev = remote.ext_dev(0)
-            x_np = np.random.randint(-128, 128, size=(o, n, env.BATCH, env.BLOCK_IN)).astype(
+            x_np = np.random.randint(-128, 128, size=(o, n, env.BLK_M, env.BLK_K)).astype(
                 x.dtype
             )
-            w_np = np.random.randint(-128, 128, size=(m, n, env.BLOCK_OUT, env.BLOCK_IN)).astype(
+            w_np = np.random.randint(-128, 128, size=(m, n, env.BLK_N, env.BLK_K)).astype(
                 w.dtype
             )
-            y_np = np.zeros((o, m, env.BATCH, env.BLOCK_OUT)).astype(y.dtype)
+            y_np = np.zeros((o, m, env.BLK_M, env.BLK_N)).astype(y.dtype)
             x_nd = tvm.nd.array(x_np, dev)
             w_nd = tvm.nd.array(w_np, dev)
             y_nd = tvm.nd.array(y_np, dev)
@@ -330,26 +330,26 @@ def test_alu():
             n = 8
             imm = np.random.randint(1, 5)
             # compute
-            a = te.placeholder((m, n, env.BATCH, env.BLOCK_OUT), name="a", dtype=env.acc_dtype)
+            a = te.placeholder((m, n, env.BLK_M, env.BLK_N), name="a", dtype=env.acc_dtype)
             a_buf = te.compute(
-                (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: a(*i), "a_buf"
+                (m, n, env.BLK_M, env.BLK_N), lambda *i: a(*i), "a_buf"
             )  # DRAM->SRAM
             if use_imm:
                 res_buf = te.compute(
-                    (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: tvm_op(a_buf(*i), imm), "res_buf"
+                    (m, n, env.BLK_M, env.BLK_N), lambda *i: tvm_op(a_buf(*i), imm), "res_buf"
                 )  # compute
             else:
-                b = te.placeholder((m, n, env.BATCH, env.BLOCK_OUT), name="b", dtype=env.acc_dtype)
+                b = te.placeholder((m, n, env.BLK_M, env.BLK_N), name="b", dtype=env.acc_dtype)
                 b_buf = te.compute(
-                    (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: b(*i), "b_buf"
+                    (m, n, env.BLK_M, env.BLK_N), lambda *i: b(*i), "b_buf"
                 )  # DRAM->SRAM
                 res_buf = te.compute(
-                    (m, n, env.BATCH, env.BLOCK_OUT),
+                    (m, n, env.BLK_M, env.BLK_N),
                     lambda *i: tvm_op(a_buf(*i), b_buf(*i)),
                     "res_buf",
                 )  # compute5B
             res = te.compute(
-                (m, n, env.BATCH, env.BLOCK_OUT),
+                (m, n, env.BLK_M, env.BLK_N),
                 lambda *i: res_buf(*i).astype(env.inp_dtype),
                 "res",
             )  # SRAM->DRAM
@@ -381,17 +381,17 @@ def test_alu():
             f = remote.load_module("load_act.o")
             # verify
             dev = remote.ext_dev(0)
-            a_np = np.random.randint(-16, 16, size=(m, n, env.BATCH, env.BLOCK_OUT)).astype(a.dtype)
+            a_np = np.random.randint(-16, 16, size=(m, n, env.BLK_M, env.BLK_N)).astype(a.dtype)
             if use_imm:
                 res_np = np_op(a_np, imm) if np_op else tvm_op(a_np, imm)
             else:
-                b_np = np.random.randint(-16, 16, size=(m, n, env.BATCH, env.BLOCK_OUT)).astype(
+                b_np = np.random.randint(-16, 16, size=(m, n, env.BLK_M, env.BLK_N)).astype(
                     b.dtype
                 )
                 res_np = np_op(a_np, b_np) if np_op else tvm_op(a_np, b_np)
             res_np = res_np.astype(res.dtype)
             a_nd = tvm.nd.array(a_np, dev)
-            res_nd = tvm.nd.array(np.zeros((m, n, env.BATCH, env.BLOCK_OUT)).astype(res.dtype), dev)
+            res_nd = tvm.nd.array(np.zeros((m, n, env.BLK_M, env.BLK_N)).astype(res.dtype), dev)
 
             if env.TARGET in ["sim", "tsim"]:
                 simulator.clear_stats()
@@ -427,20 +427,20 @@ def test_relu():
         m = 8
         n = 10
         # compute
-        a = te.placeholder((m, n, env.BATCH, env.BLOCK_OUT), name="a", dtype=env.acc_dtype)
+        a = te.placeholder((m, n, env.BLK_M, env.BLK_N), name="a", dtype=env.acc_dtype)
         a_buf = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: a(*i), "a_buf"
+            (m, n, env.BLK_M, env.BLK_N), lambda *i: a(*i), "a_buf"
         )  # DRAM->SRAM
         max_buf = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: tvm.te.max(a_buf(*i), 0), "res_buf"
+            (m, n, env.BLK_M, env.BLK_N), lambda *i: tvm.te.max(a_buf(*i), 0), "res_buf"
         )  # relu
         min_buf = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT),
+            (m, n, env.BLK_M, env.BLK_N),
             lambda *i: tvm.te.min(max_buf(*i), (1 << (env.INP_WIDTH - 1)) - 1),
             "max_buf",
         )  # relu
         res = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT),
+            (m, n, env.BLK_M, env.BLK_N),
             lambda *i: min_buf(*i).astype(env.inp_dtype),
             "min_buf",
         )  # SRAM->DRAM
@@ -464,10 +464,10 @@ def test_relu():
         f = remote.load_module("load_act.o")
         # verify
         dev = remote.ext_dev(0)
-        a_np = np.random.randint(-256, 256, size=(m, n, env.BATCH, env.BLOCK_OUT)).astype(a.dtype)
+        a_np = np.random.randint(-256, 256, size=(m, n, env.BLK_M, env.BLK_N)).astype(a.dtype)
         res_np = np.clip(a_np, 0, (1 << (env.INP_WIDTH - 1)) - 1).astype(res.dtype)
         a_nd = tvm.nd.array(a_np, dev)
-        res_nd = tvm.nd.array(np.zeros((m, n, env.BATCH, env.BLOCK_OUT)).astype(res.dtype), dev)
+        res_nd = tvm.nd.array(np.zeros((m, n, env.BLK_M, env.BLK_N)).astype(res.dtype), dev)
 
         if env.TARGET in ["sim", "tsim"]:
             simulator.clear_stats()
@@ -494,18 +494,18 @@ def test_shift_and_scale():
         imm_shift = np.random.randint(0, 8)
         imm_scale = np.random.randint(1, 5)
         # compute
-        a = te.placeholder((m, n, env.BATCH, env.BLOCK_OUT), name="a", dtype=env.acc_dtype)
+        a = te.placeholder((m, n, env.BLK_M, env.BLK_N), name="a", dtype=env.acc_dtype)
         a_buf = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: a(*i), "a_buf"
+            (m, n, env.BLK_M, env.BLK_N), lambda *i: a(*i), "a_buf"
         )  # DRAM->SRAM
         res_shift = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: a_buf(*i) + imm_shift, "res_shift"
+            (m, n, env.BLK_M, env.BLK_N), lambda *i: a_buf(*i) + imm_shift, "res_shift"
         )  # compute
         res_scale = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: res_shift(*i) >> imm_scale, "res_scale"
+            (m, n, env.BLK_M, env.BLK_N), lambda *i: res_shift(*i) >> imm_scale, "res_scale"
         )  # compute
         res = te.compute(
-            (m, n, env.BATCH, env.BLOCK_OUT), lambda *i: res_scale(*i).astype(env.inp_dtype), "res"
+            (m, n, env.BLK_M, env.BLK_N), lambda *i: res_scale(*i).astype(env.inp_dtype), "res"
         )  # SRAM->DRAM
         # schedule
         s = te.create_schedule(res.op)
@@ -526,11 +526,11 @@ def test_shift_and_scale():
         f = remote.load_module("load_act.o")
         # verify
         dev = remote.ext_dev(0)
-        a_np = np.random.randint(-10, 10, size=(m, n, env.BATCH, env.BLOCK_OUT)).astype(a.dtype)
+        a_np = np.random.randint(-10, 10, size=(m, n, env.BLK_M, env.BLK_N)).astype(a.dtype)
         res_np = np.right_shift((a_np + imm_shift), imm_scale)
         res_np = res_np.astype(res.dtype)
         a_nd = tvm.nd.array(a_np, dev)
-        res_nd = tvm.nd.array(np.zeros((m, n, env.BATCH, env.BLOCK_OUT)).astype(res.dtype), dev)
+        res_nd = tvm.nd.array(np.zeros((m, n, env.BLK_M, env.BLK_N)).astype(res.dtype), dev)
 
         if env.TARGET in ["sim", "tsim"]:
             simulator.clear_stats()
@@ -552,7 +552,7 @@ def test_runtime_array():
     def _run(env, remote):
         n = 100
         dev = remote.ext_dev(0)
-        x_np = np.random.randint(1, 10, size=(n, n, env.BATCH, env.BLOCK_OUT)).astype("int8")
+        x_np = np.random.randint(1, 10, size=(n, n, env.BLK_M, env.BLK_N)).astype("int8")
         x_nd = tvm.nd.array(x_np, dev)
         np.testing.assert_equal(x_np, x_nd.numpy())
 

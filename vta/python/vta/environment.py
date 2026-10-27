@@ -141,9 +141,9 @@ class Environment(object):
         self.ACC_WIDTH = 1 << self.LOG_ACC_WIDTH
         self.OUT_WIDTH = 1 << self.LOG_OUT_WIDTH
         # tensor intrinsic shape
-        self.BATCH = 1 << self.LOG_BATCH
-        self.BLOCK_IN = 1 << self.LOG_BLOCK_IN
-        self.BLOCK_OUT = 1 << self.LOG_BLOCK_OUT
+        self.BLK_M = 1 << self.LOG_BLK_M
+        self.BLK_K = 1 << self.LOG_BLK_K
+        self.BLK_N = 1 << self.LOG_BLK_N
         # buffer size
         self.UOP_BUFF_SIZE = 1 << self.LOG_UOP_BUFF_SIZE
         self.INP_BUFF_SIZE = 1 << self.LOG_INP_BUFF_SIZE
@@ -151,10 +151,10 @@ class Environment(object):
         self.ACC_BUFF_SIZE = 1 << self.LOG_ACC_BUFF_SIZE
         self.OUT_BUFF_SIZE = 1 << self.LOG_OUT_BUFF_SIZE
         # bytes per buffer
-        self.INP_ELEM_BITS = self.BATCH * self.BLOCK_IN * self.INP_WIDTH
-        self.WGT_ELEM_BITS = self.BLOCK_OUT * self.BLOCK_IN * self.WGT_WIDTH
-        self.ACC_ELEM_BITS = self.BATCH * self.BLOCK_OUT * self.ACC_WIDTH
-        self.OUT_ELEM_BITS = self.BATCH * self.BLOCK_OUT * self.OUT_WIDTH
+        self.INP_ELEM_BITS = self.BLK_M * self.BLK_K * self.INP_WIDTH
+        self.WGT_ELEM_BITS = self.BLK_N * self.BLK_K * self.WGT_WIDTH
+        self.ACC_ELEM_BITS = self.BLK_M * self.BLK_N * self.ACC_WIDTH
+        self.OUT_ELEM_BITS = self.BLK_M * self.BLK_N * self.OUT_WIDTH
         self.INP_ELEM_BYTES = self.INP_ELEM_BITS // 8
         self.WGT_ELEM_BYTES = self.WGT_ELEM_BITS // 8
         self.ACC_ELEM_BYTES = self.ACC_ELEM_BITS // 8

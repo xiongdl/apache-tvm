@@ -139,46 +139,46 @@ pad_h = 1
 pad_w = 1
 stride_h = 1
 stride_w = 1
-assert batch_size % env.BATCH == 0
-assert in_channels % env.BLOCK_IN == 0
-assert out_channels % env.BLOCK_OUT == 0
+assert batch_size % env.BLK_M == 0
+assert in_channels % env.BLK_K == 0
+assert out_channels % env.BLK_N == 0
 
 # Input feature map: (N, IC, H, W, n, ic)
 data_shape = (
-    batch_size // env.BATCH,
-    in_channels // env.BLOCK_IN,
+    batch_size // env.BLK_M,
+    in_channels // env.BLK_K,
     height,
     width,
-    env.BATCH,
-    env.BLOCK_IN,
+    env.BLK_M,
+    env.BLK_K,
 )
 # Kernel: (OC, IC, H, W, oc, ic)
 kernel_shape = (
-    out_channels // env.BLOCK_OUT,
-    in_channels // env.BLOCK_IN,
+    out_channels // env.BLK_N,
+    in_channels // env.BLK_K,
     kernel_h,
     kernel_w,
-    env.BLOCK_OUT,
-    env.BLOCK_IN,
+    env.BLK_N,
+    env.BLK_K,
 )
 # Derive output feature map dimensions
 fout_height = (height + 2 * pad_h - kernel_h) // stride_h + 1
 fout_width = (width + 2 * pad_w - kernel_w) // stride_w + 1
 # Output feature map: (N, OC, H, W, n, oc)
 output_shape = (
-    batch_size // env.BATCH,
-    out_channels // env.BLOCK_OUT,
+    batch_size // env.BLK_M,
+    out_channels // env.BLK_N,
     fout_height,
     fout_width,
-    env.BATCH,
-    env.BLOCK_OUT,
+    env.BLK_M,
+    env.BLK_N,
 )
 
 # Convolution reduction axes
 dy = te.reduce_axis((0, kernel_h), name="dy")
 dx = te.reduce_axis((0, kernel_w), name="dx")
-ic = te.reduce_axis((0, in_channels // env.BLOCK_IN), name="ic")
-ic_tns = te.reduce_axis((0, env.BLOCK_IN), name="ic_tns")
+ic = te.reduce_axis((0, in_channels // env.BLK_K), name="ic")
+ic_tns = te.reduce_axis((0, env.BLK_K), name="ic_tns")
 
 # Input placeholder tensors
 data = te.placeholder(data_shape, name="data", dtype=env.inp_dtype)
@@ -240,9 +240,9 @@ print(tvm.lower(s, [data, kernel, res], simple_mode=True))
 # locality, it's best not to block along the innermost dimension).
 
 # Let's define tiling sizes
-b_block = 1 // env.BATCH
-oc_block = 128 // env.BLOCK_OUT
-ic_block = 16 // env.BLOCK_IN
+b_block = 1 // env.BLK_M
+oc_block = 128 // env.BLK_N
+ic_block = 16 // env.BLK_K
 h_block = 7
 w_block = 14
 
@@ -393,14 +393,14 @@ kernel_np = np.random.randint(
 # Apply packing to the data and kernel arrays from a 2D NCHW
 # to a 4D NCHWnc packed layout
 data_packed = data_np.reshape(
-    batch_size // env.BATCH, env.BATCH, in_channels // env.BLOCK_IN, env.BLOCK_IN, height, width
+    batch_size // env.BLK_M, env.BLK_M, in_channels // env.BLK_K, env.BLK_K, height, width
 ).transpose((0, 2, 4, 5, 1, 3))
 
 kernel_packed = kernel_np.reshape(
-    out_channels // env.BLOCK_OUT,
-    env.BLOCK_OUT,
-    in_channels // env.BLOCK_IN,
-    env.BLOCK_IN,
+    out_channels // env.BLK_N,
+    env.BLK_N,
+    in_channels // env.BLK_K,
+    env.BLK_K,
     kernel_h,
     kernel_w,
 ).transpose((0, 2, 4, 5, 1, 3))
@@ -429,10 +429,10 @@ res_ref = np.clip(res_ref, 0, inp_max)
 res_ref = res_ref.astype(res.dtype)
 res_ref = res_ref.reshape(
     (
-        batch_size // env.BATCH,
-        env.BATCH,
-        out_channels // env.BLOCK_OUT,
-        env.BLOCK_OUT,
+        batch_size // env.BLK_M,
+        env.BLK_M,
+        out_channels // env.BLK_N,
+        env.BLK_N,
         fout_height,
         fout_width,
     )

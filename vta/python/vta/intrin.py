@@ -33,18 +33,18 @@ def gemm(env, mock=False):
         Whether create a mock version.
     """
     wgt_lanes = env.WGT_ELEM_BITS // env.WGT_WIDTH
-    assert wgt_lanes == env.BLOCK_OUT * env.BLOCK_IN
-    wgt_shape = (env.BLOCK_OUT, env.BLOCK_IN)
+    assert wgt_lanes == env.BLK_N * env.BLK_K
+    wgt_shape = (env.BLK_N, env.BLK_K)
     assert wgt_shape[0] * wgt_shape[1] == wgt_lanes
 
     inp_lanes = env.INP_ELEM_BITS // env.INP_WIDTH
-    assert inp_lanes == env.BATCH * env.BLOCK_IN
-    inp_shape = (env.BATCH, env.BLOCK_IN)
+    assert inp_lanes == env.BLK_M * env.BLK_K
+    inp_shape = (env.BLK_M, env.BLK_K)
     assert inp_shape[0] * inp_shape[1] == inp_lanes
 
     out_lanes = env.ACC_ELEM_BITS // env.ACC_WIDTH
-    assert out_lanes == env.BATCH * env.BLOCK_OUT
-    out_shape = (env.BATCH, env.BLOCK_OUT)
+    assert out_lanes == env.BLK_M * env.BLK_N
+    out_shape = (env.BLK_M, env.BLK_N)
     assert out_shape[0] * out_shape[1] == out_lanes
 
     wgt = te.placeholder(

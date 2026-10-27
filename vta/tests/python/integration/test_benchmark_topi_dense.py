@@ -68,12 +68,12 @@ def run_gemm(
     a_shape = (batch_size, in_feat)
     w_shape = (out_feat, in_feat)
     if data_pack:
-        data_shape = (batch_size // env.BATCH, in_feat // env.BLOCK_IN, env.BATCH, env.BLOCK_IN)
+        data_shape = (batch_size // env.BLK_M, in_feat // env.BLK_K, env.BLK_M, env.BLK_K)
         kernel_shape = (
-            out_feat // env.BLOCK_OUT,
-            in_feat // env.BLOCK_IN,
-            env.BLOCK_OUT,
-            env.BLOCK_IN,
+            out_feat // env.BLK_N,
+            in_feat // env.BLK_K,
+            env.BLK_N,
+            env.BLK_K,
         )
         fcompute = vta.top.dense_packed
         fschedule = vta.top.schedule_dense_packed
@@ -116,10 +116,10 @@ def run_gemm(
     data_np, kernel_np, res_ref = get_ref_data()
     if data_pack:
         data_np = data_np.reshape(
-            batch_size // env.BATCH, env.BATCH, in_feat // env.BLOCK_IN, env.BLOCK_IN
+            batch_size // env.BLK_M, env.BLK_M, in_feat // env.BLK_K, env.BLK_K
         ).transpose((0, 2, 1, 3))
         kernel_np = kernel_np.reshape(
-            out_feat // env.BLOCK_OUT, env.BLOCK_OUT, in_feat // env.BLOCK_IN, env.BLOCK_IN
+            out_feat // env.BLK_N, env.BLK_N, in_feat // env.BLK_K, env.BLK_K
         ).transpose((0, 2, 1, 3))
 
     # Build

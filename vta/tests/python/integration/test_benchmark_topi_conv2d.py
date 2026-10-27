@@ -61,17 +61,17 @@ env = vta.get_env()
 # ResNet18 workloads
 resnet_wkls = [
     # Workloads of resnet18 on imagenet
-    # ('resnet-18.C1',  Workload(env.BATCH, 224, 224, 3,   64,  7, 7, 3, 3, 2, 2)),
-    ("resnet-18.C2", Workload(env.BATCH, 56, 56, 64, 64, 3, 3, 1, 1, 1, 1)),
-    ("resnet-18.C3", Workload(env.BATCH, 56, 56, 64, 128, 3, 3, 1, 1, 2, 2)),
-    ("resnet-18.C4", Workload(env.BATCH, 56, 56, 64, 128, 1, 1, 0, 0, 2, 2)),
-    ("resnet-18.C5", Workload(env.BATCH, 28, 28, 128, 128, 3, 3, 1, 1, 1, 1)),
-    ("resnet-18.C6", Workload(env.BATCH, 28, 28, 128, 256, 3, 3, 1, 1, 2, 2)),
-    ("resnet-18.C7", Workload(env.BATCH, 28, 28, 128, 256, 1, 1, 0, 0, 2, 2)),
-    ("resnet-18.C8", Workload(env.BATCH, 14, 14, 256, 256, 3, 3, 1, 1, 1, 1)),
-    ("resnet-18.C9", Workload(env.BATCH, 14, 14, 256, 512, 3, 3, 1, 1, 2, 2)),
-    ("resnet-18.C10", Workload(env.BATCH, 14, 14, 256, 512, 1, 1, 0, 0, 2, 2)),
-    ("resnet-18.C11", Workload(env.BATCH, 7, 7, 512, 512, 3, 3, 1, 1, 1, 1)),
+    # ('resnet-18.C1',  Workload(env.BLK_M, 224, 224, 3,   64,  7, 7, 3, 3, 2, 2)),
+    ("resnet-18.C2", Workload(env.BLK_M, 56, 56, 64, 64, 3, 3, 1, 1, 1, 1)),
+    ("resnet-18.C3", Workload(env.BLK_M, 56, 56, 64, 128, 3, 3, 1, 1, 2, 2)),
+    ("resnet-18.C4", Workload(env.BLK_M, 56, 56, 64, 128, 1, 1, 0, 0, 2, 2)),
+    ("resnet-18.C5", Workload(env.BLK_M, 28, 28, 128, 128, 3, 3, 1, 1, 1, 1)),
+    ("resnet-18.C6", Workload(env.BLK_M, 28, 28, 128, 256, 3, 3, 1, 1, 2, 2)),
+    ("resnet-18.C7", Workload(env.BLK_M, 28, 28, 128, 256, 1, 1, 0, 0, 2, 2)),
+    ("resnet-18.C8", Workload(env.BLK_M, 14, 14, 256, 256, 3, 3, 1, 1, 1, 1)),
+    ("resnet-18.C9", Workload(env.BLK_M, 14, 14, 256, 512, 3, 3, 1, 1, 2, 2)),
+    ("resnet-18.C10", Workload(env.BLK_M, 14, 14, 256, 512, 1, 1, 0, 0, 2, 2)),
+    ("resnet-18.C11", Workload(env.BLK_M, 7, 7, 512, 512, 3, 3, 1, 1, 1, 1)),
 ]
 
 # FIXME: we need a custom clip operator to circumvent a pattern detection limitation
@@ -98,7 +98,7 @@ def run_conv2d(env, remote, wl, target, check_correctness=True, print_ir=False, 
         conv2d_fschedule = topi.arm_cpu.schedule_conv2d_nchw_spatial_pack
     elif "vta" in target.keys:
         data_pack = True
-        layout = "NCHW%dn%dc" % (env.BATCH, env.BLOCK_IN)
+        layout = "NCHW%dn%dc" % (env.BLK_M, env.BLK_K)
         conv2d_fcompute = vta.top.conv2d_packed
         conv2d_fschedule = vta.top.schedule_conv2d_packed
 
@@ -108,28 +108,28 @@ def run_conv2d(env, remote, wl, target, check_correctness=True, print_ir=False, 
     b_shape = (wl.batch, wl.out_filter, 1, 1)
     if data_pack:
         data_shape = (
-            wl.batch // env.BATCH,
-            wl.in_filter // env.BLOCK_IN,
+            wl.batch // env.BLK_M,
+            wl.in_filter // env.BLK_K,
             wl.height,
             wl.width,
-            env.BATCH,
-            env.BLOCK_IN,
+            env.BLK_M,
+            env.BLK_K,
         )
         kernel_shape = (
-            wl.out_filter // env.BLOCK_OUT,
-            wl.in_filter // env.BLOCK_IN,
+            wl.out_filter // env.BLK_N,
+            wl.in_filter // env.BLK_K,
             wl.hkernel,
             wl.wkernel,
-            env.BLOCK_OUT,
-            env.BLOCK_IN,
+            env.BLK_N,
+            env.BLK_K,
         )
         bias_shape = (
-            wl.batch // env.BATCH,
-            wl.out_filter // env.BLOCK_OUT,
+            wl.batch // env.BLK_M,
+            wl.out_filter // env.BLK_N,
             1,
             1,
-            env.BATCH,
-            env.BLOCK_OUT,
+            env.BLK_M,
+            env.BLK_N,
         )
     else:
         data_shape = a_shape
@@ -196,23 +196,23 @@ def run_conv2d(env, remote, wl, target, check_correctness=True, print_ir=False, 
     data_np, kernel_np, bias_np, res_ref = get_ref_data()
     if data_pack:
         data_np = data_np.reshape(
-            wl.batch // env.BATCH,
-            env.BATCH,
-            wl.in_filter // env.BLOCK_IN,
-            env.BLOCK_IN,
+            wl.batch // env.BLK_M,
+            env.BLK_M,
+            wl.in_filter // env.BLK_K,
+            env.BLK_K,
             wl.height,
             wl.width,
         ).transpose((0, 2, 4, 5, 1, 3))
         kernel_np = kernel_np.reshape(
-            wl.out_filter // env.BLOCK_OUT,
-            env.BLOCK_OUT,
-            wl.in_filter // env.BLOCK_IN,
-            env.BLOCK_IN,
+            wl.out_filter // env.BLK_N,
+            env.BLK_N,
+            wl.in_filter // env.BLK_K,
+            env.BLK_K,
             wl.hkernel,
             wl.wkernel,
         ).transpose((0, 2, 4, 5, 1, 3))
         bias_np = bias_np.reshape(
-            wl.batch // env.BATCH, wl.out_filter // env.BLOCK_OUT, 1, 1, env.BATCH, env.BLOCK_OUT
+            wl.batch // env.BLK_M, wl.out_filter // env.BLK_N, 1, 1, env.BLK_M, env.BLK_N
         )
 
     # Build
